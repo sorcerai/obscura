@@ -265,7 +265,9 @@ impl FrameRealm {
         for (index, script) in scripts.iter().enumerate() {
             if !script.is_classic() {
                 if script.type_attribute == "module" {
-                    problems.push(format!("frame module script {index} skipped: not supported"));
+                    problems.push(format!(
+                        "frame module script {index} skipped: not supported"
+                    ));
                 }
                 continue;
             }
@@ -585,10 +587,7 @@ mod tests {
 
         assert_eq!(
             frame
-                .evaluate(
-                    &mut parent,
-                    "document.getElementById('result').textContent",
-                )
+                .evaluate(&mut parent, "document.getElementById('result').textContent",)
                 .unwrap(),
             serde_json::json!("https://child.example"),
         );
@@ -641,7 +640,9 @@ mod tests {
         );
 
         assert_eq!(
-            parent.evaluate("document.body.getAttribute('data-owner')").unwrap(),
+            parent
+                .evaluate("document.body.getAttribute('data-owner')")
+                .unwrap(),
             serde_json::json!("parent"),
         );
         assert_eq!(
@@ -697,9 +698,7 @@ mod tests {
         )
         .expect("frame realm");
 
-        assert!(frame
-            .run_document_scripts(&mut parent, |_| None)
-            .is_empty());
+        assert!(frame.run_document_scripts(&mut parent, |_| None).is_empty());
         frame
             .dispatch_load_events(&mut parent)
             .expect("frame load events");
@@ -745,7 +744,10 @@ mod tests {
             problems.iter().any(|p| p.contains("missing.js")),
             "{problems:?}"
         );
-        assert!(problems.iter().any(|p| p.contains("module")), "{problems:?}");
+        assert!(
+            problems.iter().any(|p| p.contains("module")),
+            "{problems:?}"
+        );
     }
 
     #[test]
@@ -774,7 +776,10 @@ mod tests {
         // Out-of-order access must be safe: each frame carries its own state.
         for (index, frame) in frames.iter().enumerate().rev() {
             assert_eq!(
-                frame.evaluate(&mut parent, "globalThis.n").unwrap().as_f64(),
+                frame
+                    .evaluate(&mut parent, "globalThis.n")
+                    .unwrap()
+                    .as_f64(),
                 Some(index as f64)
             );
             assert_eq!(
@@ -845,11 +850,16 @@ mod tests {
         )
         .expect("frame realm");
         frame
-            .execute_script(&mut parent, "setTimeout(() => { globalThis.fired = 1; }, 50);")
+            .execute_script(
+                &mut parent,
+                "setTimeout(() => { globalThis.fired = 1; }, 50);",
+            )
             .unwrap();
         parent.run_event_loop_bounded(300).await.unwrap();
         assert_eq!(
-            frame.evaluate(&mut parent, "globalThis.fired || 0").unwrap(),
+            frame
+                .evaluate(&mut parent, "globalThis.fired || 0")
+                .unwrap(),
             serde_json::json!(1),
             "the frame's timer callback never ran"
         );
@@ -1056,15 +1066,33 @@ mod tests {
 
         // Explicit matching origin -> delivered (the case that must not break).
         child
-            .deliver_message(&mut parent, "{\"v\":\"m1\"}", "https://parent.example", 0, "https://parent.example")
+            .deliver_message(
+                &mut parent,
+                "{\"v\":\"m1\"}",
+                "https://parent.example",
+                0,
+                "https://parent.example",
+            )
             .unwrap();
         // Wildcard -> always delivered.
         child
-            .deliver_message(&mut parent, "{\"v\":\"m2\"}", "https://parent.example", 0, "*")
+            .deliver_message(
+                &mut parent,
+                "{\"v\":\"m2\"}",
+                "https://parent.example",
+                0,
+                "*",
+            )
             .unwrap();
         // Explicit non-matching origin -> dropped.
         child
-            .deliver_message(&mut parent, "{\"v\":\"m3\"}", "https://parent.example", 0, "https://evil.example")
+            .deliver_message(
+                &mut parent,
+                "{\"v\":\"m3\"}",
+                "https://parent.example",
+                0,
+                "https://evil.example",
+            )
             .unwrap();
 
         assert_eq!(
@@ -1091,7 +1119,13 @@ mod tests {
             )
             .unwrap();
         blank
-            .deliver_message(&mut parent, "{\"v\":\"w\"}", "https://parent.example", 0, "*")
+            .deliver_message(
+                &mut parent,
+                "{\"v\":\"w\"}",
+                "https://parent.example",
+                0,
+                "*",
+            )
             .unwrap();
         assert_eq!(
             blank.evaluate(&mut parent, "globalThis.got").unwrap(),
@@ -1121,7 +1155,9 @@ mod tests {
         );
         // The page itself really is the top and must still say so.
         assert_eq!(
-            parent.evaluate("[parent === window, top === window]").unwrap(),
+            parent
+                .evaluate("[parent === window, top === window]")
+                .unwrap(),
             serde_json::json!([true, true]),
         );
     }
@@ -1247,7 +1283,9 @@ mod tests {
         );
         assert_eq!(
             parent
-                .evaluate("globalThis.__obscura_frameObjects[1].document.querySelector('p').textContent")
+                .evaluate(
+                    "globalThis.__obscura_frameObjects[1].document.querySelector('p').textContent"
+                )
                 .unwrap(),
             serde_json::json!("child"),
         );

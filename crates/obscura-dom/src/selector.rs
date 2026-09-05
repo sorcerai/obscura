@@ -30,7 +30,7 @@ impl parser::SelectorImpl for ObscuraSelector {
     type PseudoElement = PseudoElement;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CssString(pub String);
 
 impl<'a> From<&'a str> for CssString {
@@ -58,12 +58,6 @@ impl PrecomputedHash for CssString {
             h = h.wrapping_mul(33).wrapping_add(*b as u32);
         }
         h
-    }
-}
-
-impl Default for CssString {
-    fn default() -> Self {
-        CssString(String::new())
     }
 }
 
@@ -1791,11 +1785,7 @@ mod tests {
         let item = tree.get_element_by_id("item").unwrap();
         let unslotted = tree.get_element_by_id("unslotted").unwrap();
         let root = tree.attach_shadow_root(host, ShadowRootMode::Open).unwrap();
-        let slot = shadow_element(
-            &tree,
-            "slot",
-            &[("name", "title"), ("class", "outlet")],
-        );
+        let slot = shadow_element(&tree, "slot", &[("name", "title"), ("class", "outlet")]);
         let wrapper = shadow_element(&tree, "div", &[("class", "wrapper")]);
         tree.append_child(root, wrapper);
         tree.append_child(wrapper, slot);

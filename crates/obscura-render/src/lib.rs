@@ -98,38 +98,34 @@ mod paint;
 #[cfg(feature = "paint")]
 pub use paint::{
     image_intrinsic_dimensions, paint_dom, paint_dom_scrolled,
-    paint_dom_scrolled_at_animation_time,
-    paint_dom_scrolled_at_animation_time_with_surface_color_and_resources,
-    paint_dom_scrolled_at_animation_time_with_surface_color, paint_prepared,
+    paint_dom_scrolled_at_animation_time, paint_dom_scrolled_at_animation_time_with_surface_color,
+    paint_dom_scrolled_at_animation_time_with_surface_color_and_resources, paint_prepared,
     paint_prepared_region_with_scroll, paint_prepared_region_with_scroll_and_surface_color,
     paint_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces,
     paint_prepared_with_scroll, paint_prepared_with_scroll_and_surface_color,
     paint_prepared_with_scroll_and_surface_color_and_canvas_surfaces, prepare_dom,
-    prepare_dom_at_animation_time,
-    prepare_dom_with_dynamic_fonts, prepare_dom_with_dynamic_fonts_at_animation_time,
+    prepare_dom_at_animation_time, prepare_dom_with_dynamic_fonts,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_at_animation_time,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_for_media_with_animation_state,
     prepare_dom_with_dynamic_fonts_and_stylesheet_cache_with_animation_state,
-    screenshot_png, screenshot_png_scrolled, screenshot_png_scrolled_at_animation_time,
-    screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources,
+    prepare_dom_with_dynamic_fonts_at_animation_time, prepare_dom_with_retained_attribute_styles,
+    prepare_dom_with_retained_styles, prepare_dom_with_retained_styles_at_animation_time,
+    prepare_dom_with_retained_styles_with_animation_state, screenshot_png, screenshot_png_scrolled,
+    screenshot_png_scrolled_at_animation_time,
     screenshot_png_scrolled_at_animation_time_with_surface_color,
-    prepare_dom_with_retained_attribute_styles, prepare_dom_with_retained_styles,
-    prepare_dom_with_retained_styles_at_animation_time,
-    prepare_dom_with_retained_styles_with_animation_state,
-    screenshot_prepared,
-    screenshot_prepared_region_with_scroll,
-    screenshot_prepared_region_with_scroll_and_surface_color,
-    screenshot_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces,
+    screenshot_png_scrolled_at_animation_time_with_surface_color_and_resources,
+    screenshot_prepared, screenshot_prepared_region_with_scroll,
     screenshot_prepared_region_with_scroll_and_backgrounds,
     screenshot_prepared_region_with_scroll_and_backgrounds_and_canvas_surfaces,
-    screenshot_prepared_with_scroll,
-    screenshot_prepared_with_scroll_and_surface_color,
-    screenshot_prepared_with_scroll_and_surface_color_and_canvas_surfaces,
-    validate_capture_region, CaptureError, CaptureRegion, DynamicFontFace, ElementScrollMetrics,
-    CanvasSurface, CanvasSurfaceSource, ImageRequestProfile, PreparedRender, RenderResourceCache, RenderResourceLoader,
-    ResolvedScrollState, SelectedImage,
-    MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PIXELS,
+    screenshot_prepared_region_with_scroll_and_surface_color,
+    screenshot_prepared_region_with_scroll_and_surface_color_and_canvas_surfaces,
+    screenshot_prepared_with_scroll, screenshot_prepared_with_scroll_and_surface_color,
+    screenshot_prepared_with_scroll_and_surface_color_and_canvas_surfaces, validate_capture_region,
+    CanvasSurface, CanvasSurfaceSource, CaptureError, CaptureRegion, DynamicFontFace,
+    ElementScrollMetrics, ImageRequestProfile, PreparedRender, RenderResourceCache,
+    RenderResourceLoader, ResolvedScrollState, SelectedImage, MAX_CAPTURE_DIMENSION,
+    MAX_CAPTURE_PIXELS,
 };
 
 // Real inline text layout (cosmic-text) lives behind the paint feature; the
@@ -320,9 +316,7 @@ pub mod inline {
         let preferred_height = px(style.height);
         let min_width = px(style.min_width).unwrap_or(0.0);
         let min_height = px(style.min_height).unwrap_or(0.0);
-        let max_width = px(style.max_width)
-            .unwrap_or(f32::INFINITY)
-            .max(min_width);
+        let max_width = px(style.max_width).unwrap_or(f32::INFINITY).max(min_width);
         let max_height = px(style.max_height)
             .unwrap_or(f32::INFINITY)
             .max(min_height);
@@ -1288,8 +1282,7 @@ pub struct LayoutStyle {
     pub grid_template_rows: Vec<taffy::GridTemplateComponent<String>>,
     /// Keeps the opaque `calc()` handles embedded in grid track sizing
     /// functions alive until every Taffy layout pass has completed.
-    pub(crate) grid_calc_expressions:
-        [Vec<std::sync::Arc<crate::style::GridCalcExpression>>; 4],
+    pub(crate) grid_calc_expressions: [Vec<std::sync::Arc<crate::style::GridCalcExpression>>; 4],
     /// Track sizing functions for columns created outside the explicit grid.
     /// An empty list is the CSS initial `auto` value: taffy supplies one
     /// automatic implicit track and cycles a non-empty authored list.
@@ -2049,11 +2042,7 @@ pub struct AnimationTimelineState {
 }
 
 impl AnimationTimelineState {
-    pub fn note_start_candidate(
-        &mut self,
-        node: obscura_dom::tree::NodeId,
-        document_time_ms: f32,
-    ) {
+    pub fn note_start_candidate(&mut self, node: obscura_dom::tree::NodeId, document_time_ms: f32) {
         if document_time_ms.is_finite() && document_time_ms >= 0.0 {
             self.start_candidates.insert(node, document_time_ms);
         }
@@ -2068,8 +2057,7 @@ impl AnimationTimelineState {
         document_time_ms: f32,
     ) {
         if document_time_ms.is_finite() && document_time_ms >= 0.0 {
-            self.subtree_start_candidates
-                .insert(root, document_time_ms);
+            self.subtree_start_candidates.insert(root, document_time_ms);
         }
     }
 
@@ -2111,10 +2099,11 @@ impl AnimationTimelineState {
     /// Exact set of nodes currently targeted by registered Web Animations.
     /// The render preparation boundary additionally filters disconnected
     /// targets against the current DOM before producing restyle damage.
-    pub fn waapi_nodes(
-        &self,
-    ) -> std::collections::HashSet<obscura_dom::tree::NodeId> {
-        self.waapi.values().map(|animation| animation.node).collect()
+    pub fn waapi_nodes(&self) -> std::collections::HashSet<obscura_dom::tree::NodeId> {
+        self.waapi
+            .values()
+            .map(|animation| animation.node)
+            .collect()
     }
 
     /// New animation instance epochs must reach a style flush. Retained
@@ -2128,8 +2117,15 @@ impl AnimationTimelineState {
         self.waapi.remove(&id).is_some()
     }
 
-    pub fn set_waapi_current_time(&mut self, id: u64, document_time_ms: f32, local_time_ms: f32) -> bool {
-        let Some(animation) = self.waapi.get_mut(&id) else { return false; };
+    pub fn set_waapi_current_time(
+        &mut self,
+        id: u64,
+        document_time_ms: f32,
+        local_time_ms: f32,
+    ) -> bool {
+        let Some(animation) = self.waapi.get_mut(&id) else {
+            return false;
+        };
         let local = local_time_ms.max(0.0);
         animation.hold_time_ms = Some(local);
         animation.start_time_ms = document_time_ms - local;
@@ -2142,7 +2138,9 @@ impl AnimationTimelineState {
         state: WaapiPlayState,
         document_time_ms: f32,
     ) -> bool {
-        let Some(animation) = self.waapi.get_mut(&id) else { return false; };
+        let Some(animation) = self.waapi.get_mut(&id) else {
+            return false;
+        };
         let current = animation
             .hold_time_ms
             .unwrap_or_else(|| (document_time_ms - animation.start_time_ms).max(0.0));
@@ -2160,7 +2158,9 @@ impl AnimationTimelineState {
     }
 
     pub fn finish_waapi(&mut self, id: u64) -> bool {
-        let Some(animation) = self.waapi.get_mut(&id) else { return false; };
+        let Some(animation) = self.waapi.get_mut(&id) else {
+            return false;
+        };
         let end = animation.timing.delay_ms
             + animation.timing.duration_ms * animation.timing.iteration_count.max(0.0);
         animation.hold_time_ms = Some(end.max(0.0));
@@ -2177,10 +2177,15 @@ impl AnimationTimelineState {
             if animation.node != node {
                 return None;
             }
-            let local = animation.hold_time_ms.unwrap_or_else(|| {
-                (document_time.milliseconds - animation.start_time_ms).max(0.0)
-            });
-            Some((animation, AnimationSampleTime { milliseconds: local }))
+            let local = animation
+                .hold_time_ms
+                .unwrap_or_else(|| (document_time.milliseconds - animation.start_time_ms).max(0.0));
+            Some((
+                animation,
+                AnimationSampleTime {
+                    milliseconds: local,
+                },
+            ))
         })
     }
 
@@ -2250,7 +2255,9 @@ impl AnimationTimelineState {
                         was_paused: paused,
                     },
                 );
-                self.instances.get_mut(&node).expect("inserted animation instance")
+                self.instances
+                    .get_mut(&node)
+                    .expect("inserted animation instance")
             }
         };
 
@@ -2271,16 +2278,17 @@ impl AnimationTimelineState {
         }
     }
 
-    pub(crate) fn clear_animation(&mut self, node: obscura_dom::tree::NodeId, sample: AnimationSample) {
+    pub(crate) fn clear_animation(
+        &mut self,
+        node: obscura_dom::tree::NodeId,
+        sample: AnimationSample,
+    ) {
         if sample.mode == AnimationSampleMode::DocumentTime {
             self.instances.remove(&node);
         }
     }
 
-    pub fn retain_nodes(
-        &mut self,
-        mut keep: impl FnMut(obscura_dom::tree::NodeId) -> bool,
-    ) {
+    pub fn retain_nodes(&mut self, mut keep: impl FnMut(obscura_dom::tree::NodeId) -> bool) {
         self.instances.retain(|node, _| keep(*node));
         self.start_candidates.retain(|node, _| keep(*node));
         self.subtree_start_candidates.retain(|node, _| keep(*node));
@@ -2300,11 +2308,11 @@ fn waapi_is_active(animation: &WaapiAnimation, document_time: AnimationSampleTim
     {
         return false;
     }
-    let local = animation.hold_time_ms.unwrap_or_else(|| {
-        (document_time.milliseconds - animation.start_time_ms).max(0.0)
-    });
-    let end = animation.timing.delay_ms
-        + animation.timing.duration_ms * animation.timing.iteration_count;
+    let local = animation
+        .hold_time_ms
+        .unwrap_or_else(|| (document_time.milliseconds - animation.start_time_ms).max(0.0));
+    let end =
+        animation.timing.delay_ms + animation.timing.duration_ms * animation.timing.iteration_count;
     local < end.max(0.0)
 }
 

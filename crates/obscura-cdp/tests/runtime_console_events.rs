@@ -129,7 +129,9 @@ async fn navigation_emits_console_arguments_and_uncaught_exception_details() {
     let details = &exceptions[0].1["exceptionDetails"];
     assert_eq!(details["text"], "Uncaught");
     assert!(details["exceptionId"].as_u64().is_some());
-    assert!(details["url"].as_str().is_some_and(|url| url.starts_with("data:text/html,")));
+    assert!(details["url"]
+        .as_str()
+        .is_some_and(|url| url.starts_with("data:text/html,")));
     assert!(details["exception"]["description"]
         .as_str()
         .is_some_and(|description| description.contains("Error: boom")));

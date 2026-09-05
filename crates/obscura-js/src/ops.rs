@@ -5,19 +5,19 @@ use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use deno_core::op2;
+use deno_core::v8;
 use deno_core::Extension;
 use deno_core::JsBuffer;
-use deno_core::v8;
 use deno_core::OpState;
-use obscura_dom::{DomTree, NodeData, NodeId};
 use obscura_dom::tree::{AttachShadowError, ShadowRootMode};
-#[cfg(feature = "render")]
-use obscura_net::{RequestCredentials, RequestMode, ResourceRequest};
+use obscura_dom::{DomTree, NodeData, NodeId};
 #[cfg(feature = "stealth")]
 use obscura_net::StealthHttpClient;
 use obscura_net::{
     CallbackRegistry, CookieJar, ObscuraHttpClient, RequestInfo, ResourceType, Response,
 };
+#[cfg(feature = "render")]
+use obscura_net::{RequestCredentials, RequestMode, ResourceRequest};
 use tokio::sync::Mutex;
 
 #[cfg(feature = "render")]
@@ -369,6 +369,12 @@ impl ObscuraState {
             already_started_scripts: RefCell::new(HashSet::new()),
             write_stream: RefCell::new(None),
         }
+    }
+}
+
+impl Default for ObscuraState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -863,20 +869,20 @@ fn retained_style_mutation(
                 return None;
             }
             let keeps_selector_value = !name.eq_ignore_ascii_case("style");
-            Some(obscura_render::AttributeStyleMutation {
-                node,
-                name: name.to_string(),
-                old_value: keeps_selector_value
-                    .then(|| {
-                        dom.with_node(node, |node| {
-                            node.get_attribute(name).map(str::to_owned)
+            Some(
+                obscura_render::AttributeStyleMutation {
+                    node,
+                    name: name.to_string(),
+                    old_value: keeps_selector_value
+                        .then(|| {
+                            dom.with_node(node, |node| node.get_attribute(name).map(str::to_owned))
+                                .flatten()
                         })
-                        .flatten()
-                    })
-                    .flatten(),
-                new_value: keeps_selector_value.then(|| value.to_string()),
-            }
-            .into())
+                        .flatten(),
+                    new_value: keeps_selector_value.then(|| value.to_string()),
+                }
+                .into(),
+            )
         }
         "remove_attribute" => {
             if obscura_render::dom::retained_attribute_mutation_kind(dom, node, arg2)
@@ -885,20 +891,20 @@ fn retained_style_mutation(
                 return None;
             }
             let keeps_selector_value = !arg2.eq_ignore_ascii_case("style");
-            Some(obscura_render::AttributeStyleMutation {
-                node,
-                name: arg2.to_string(),
-                old_value: keeps_selector_value
-                    .then(|| {
-                        dom.with_node(node, |node| {
-                            node.get_attribute(arg2).map(str::to_owned)
+            Some(
+                obscura_render::AttributeStyleMutation {
+                    node,
+                    name: arg2.to_string(),
+                    old_value: keeps_selector_value
+                        .then(|| {
+                            dom.with_node(node, |node| node.get_attribute(arg2).map(str::to_owned))
+                                .flatten()
                         })
-                        .flatten()
-                    })
-                    .flatten(),
-                new_value: None,
-            }
-            .into())
+                        .flatten(),
+                    new_value: None,
+                }
+                .into(),
+            )
         }
         "append_child" => {
             let child = NodeId::new(arg2.parse::<u32>().ok()?);
@@ -915,9 +921,7 @@ fn retained_style_mutation(
         }
         "remove_child" => {
             let old_parent = dom.get_node(node)?.parent?;
-            Some(
-                obscura_render::TreeStyleMutation::Remove { node, old_parent }.into(),
-            )
+            Some(obscura_render::TreeStyleMutation::Remove { node, old_parent }.into())
         }
         "insert_before" => {
             let reference = NodeId::new(arg2.parse::<u32>().ok()?);
@@ -1087,7 +1091,14 @@ fn fragment_context_and_html(arg: &str) -> (html5ever::QualName, &str) {
         Some((prefix, local)) if !prefix.is_empty() && !local.is_empty() => {
             (Some(html5ever::Prefix::from(prefix)), local)
         }
-        _ => (None, if qualified.is_empty() { "body" } else { qualified }),
+        _ => (
+            None,
+            if qualified.is_empty() {
+                "body"
+            } else {
+                qualified
+            },
+        ),
     };
     (
         html5ever::QualName::new(
@@ -1323,9 +1334,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                     .parse::<u32>()
                     .ok()
                     .map(NodeId::new)
-                    .and_then(|reference| {
-                        state.dom.as_ref()?.get_node(reference)?.parent
-                    }),
+                    .and_then(|reference| state.dom.as_ref()?.get_node(reference)?.parent),
                 "remove_child" => arg1
                     .parse::<u32>()
                     .ok()
@@ -1343,10 +1352,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             }
             if let Some(mutation) = retained_style_mutation {
                 let retained = state.prepared_render.is_some()
-                    && queue_retained_style_mutation(
-                        &mut state.pending_style_mutations,
-                        mutation,
-                    );
+                    && queue_retained_style_mutation(&mut state.pending_style_mutations, mutation);
                 if !retained {
                     state.prepared_render = None;
                     state.pending_style_mutations.clear();
@@ -1391,7 +1397,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                 .flatten()
                 .map(|title_id| {
                     dom.text_content(title_id)
-                        .split(|ch| matches!(ch, '\t' | '\n' | '\u{000C}' | '\r' | ' '))
+                        .split(['\t', '\n', '\u{000C}', '\r', ' '])
                         .filter(|part| !part.is_empty())
                         .collect::<Vec<_>>()
                         .join(" ")
@@ -1696,9 +1702,15 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
                 Err(_) => return "false".into(),
             };
             let child = NodeId::new(child);
-            let had_parent = dom.get_node(child).is_some_and(|node| node.parent.is_some());
+            let had_parent = dom
+                .get_node(child)
+                .is_some_and(|node| node.parent.is_some());
             dom.remove_child(child);
-            (had_parent && dom.get_node(child).is_some_and(|node| node.parent.is_none())).to_string()
+            (had_parent
+                && dom
+                    .get_node(child)
+                    .is_some_and(|node| node.parent.is_none()))
+            .to_string()
         }
         "insert_before" => {
             let new_node = match arg1.parse::<u32>() {
@@ -1733,7 +1745,9 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
             let nid = arg1.parse::<u32>().unwrap_or(0);
             let (ns, local) = arg2.split_once('\0').unwrap_or(("", arg2.as_str()));
             let val = dom
-                .with_node(NodeId::new(nid), |n| n.get_attribute_ns(ns, local).map(|s| s.to_string()))
+                .with_node(NodeId::new(nid), |n| {
+                    n.get_attribute_ns(ns, local).map(|s| s.to_string())
+                })
                 .flatten();
             serde_json::to_string(&val).unwrap_or("null".into())
         }
@@ -2129,7 +2143,10 @@ fn compare_node_order(dom: &DomTree, a: NodeId, b: NodeId) -> i32 {
 
 #[op2(fast)]
 fn op_runtime_events_enabled(state: &OpState) -> bool {
-    state.borrow::<SharedState>().borrow().runtime_events_enabled
+    state
+        .borrow::<SharedState>()
+        .borrow()
+        .runtime_events_enabled
 }
 
 #[op2(fast)]
@@ -3112,8 +3129,8 @@ mod tests {
     #[cfg(feature = "render")]
     use super::{
         ensure_prepared_geometry, ensure_prepared_render, node_is_connected,
-        queue_retained_style_mutation, retained_style_mutation,
-        shadow_including_connected_nodes, MAX_PENDING_STYLE_MUTATIONS,
+        queue_retained_style_mutation, retained_style_mutation, shadow_including_connected_nodes,
+        MAX_PENDING_STYLE_MUTATIONS,
     };
     #[cfg(feature = "render")]
     use obscura_dom::ShadowRootMode;
@@ -3153,8 +3170,14 @@ mod tests {
 
     #[test]
     fn pbkdf2_rejects_excessive_output_length() {
-        let err = pbkdf2_derive("SHA-256", b"pw", b"salt", 1_000, PBKDF2_MAX_OUTPUT_BYTES + 1)
-            .expect_err("output length above the cap must be rejected");
+        let err = pbkdf2_derive(
+            "SHA-256",
+            b"pw",
+            b"salt",
+            1_000,
+            PBKDF2_MAX_OUTPUT_BYTES + 1,
+        )
+        .expect_err("output length above the cap must be rejected");
         assert!(
             err.to_string().contains("length"),
             "error should name the length cap: {err}"
@@ -3167,7 +3190,6 @@ mod tests {
             .expect("ordinary parameters must derive successfully");
         assert_eq!(dk.len(), 32, "derived key must have the requested length");
     }
-
 
     // SEC-005 / #581 — op_fetch_url must not buffer an unbounded response body.
     // read_body_capped streams the body and refuses anything larger than the
@@ -3388,11 +3410,15 @@ mod tests {
             .unwrap();
         let values = result.as_array().unwrap();
         assert!(
-            values[..3].iter().all(|value| value.as_f64() == Some(100.0)),
+            values[..3]
+                .iter()
+                .all(|value| value.as_f64() == Some(100.0)),
             "posted-task chains did not finish inside the 100ms pump: {result}",
         );
         assert!(
-            values[3].as_f64().is_some_and(|elapsed| elapsed >= 0.0 && elapsed < 75.0),
+            values[3]
+                .as_f64()
+                .is_some_and(|elapsed| elapsed >= 0.0 && elapsed < 75.0),
             "300 chained posted-task deliveries retained timer-wheel latency: {result}",
         );
     }
@@ -3612,16 +3638,19 @@ mod tests {
         let host = dom.get_element_by_id("host").unwrap();
         let source = dom.get_element_by_id("source").unwrap();
         let child = dom.get_element_by_id("shadow-child").unwrap();
-        let root = dom
-            .attach_shadow_root(host, ShadowRootMode::Open)
-            .unwrap();
+        let root = dom.attach_shadow_root(host, ShadowRootMode::Open).unwrap();
         dom.append_child(root, child);
 
         assert!(node_is_connected(&dom, child));
         assert!(shadow_including_connected_nodes(&dom).contains(&child));
         assert!(
-            retained_style_mutation(&dom, "set_attribute", &child.index().to_string(), "class\0changed")
-                .is_none(),
+            retained_style_mutation(
+                &dom,
+                "set_attribute",
+                &child.index().to_string(),
+                "class\0changed"
+            )
+            .is_none(),
             "shadow mutations require a full scoped cascade"
         );
 
@@ -3988,7 +4017,9 @@ fn op_post_frame_message(
         );
         return;
     }
-    gs.pending_frame_message_bytes = gs.pending_frame_message_bytes.saturating_add(data_json.len());
+    gs.pending_frame_message_bytes = gs
+        .pending_frame_message_bytes
+        .saturating_add(data_json.len());
     gs.pending_frame_messages.push(PendingFrameMessage {
         target_frame_id,
         source_frame_id,
@@ -4101,7 +4132,10 @@ fn op_posted_task(
         let callback = v8::Local::new(scope, callback);
         let receiver = v8::undefined(scope).into();
         let current_generation = v8::Number::new(scope, current_generation);
-        if callback.call(scope, receiver, &[current_generation.into()]).is_none() {
+        if callback
+            .call(scope, receiver, &[current_generation.into()])
+            .is_none()
+        {
             let message = scope
                 .exception()
                 .map(|exception| exception.to_rust_string_lossy(scope))
@@ -4121,9 +4155,7 @@ enum PostedTaskOwnerStatus {
     Generation(u64),
 }
 
-fn posted_task_owner_status(
-    owner: &std::rc::Weak<RefCell<ObscuraState>>,
-) -> PostedTaskOwnerStatus {
+fn posted_task_owner_status(owner: &std::rc::Weak<RefCell<ObscuraState>>) -> PostedTaskOwnerStatus {
     let Some(owner) = owner.upgrade() else {
         return PostedTaskOwnerStatus::Gone;
     };
@@ -4831,11 +4863,16 @@ fn op_canvas_register_surface(
     if !is_canvas {
         return false;
     }
-    let replacing = state.canvas_surfaces.get(&node).map(|surface| surface.pixels.len());
+    let replacing = state
+        .canvas_surfaces
+        .get(&node)
+        .map(|surface| surface.pixels.len());
     let retained_bytes = state
         .canvas_surfaces
         .values()
-        .try_fold(0usize, |total, surface| total.checked_add(surface.pixels.len()))
+        .try_fold(0usize, |total, surface| {
+            total.checked_add(surface.pixels.len())
+        })
         .and_then(|total| total.checked_sub(replacing.unwrap_or(0)))
         .and_then(|total| total.checked_add(expected));
     if retained_bytes.is_none_or(|bytes| bytes > MAX_CANVAS_SURFACE_BYTES) {
@@ -4875,6 +4912,7 @@ fn op_canvas_paint_damage(state: &OpState, nid: u32) -> bool {
 }
 
 pub fn build_extension() -> Extension {
+    #[allow(unused_mut)]
     let mut ops = vec![
         op_dom(),
         op_script_mark_started(),
@@ -5010,7 +5048,12 @@ fn op_waapi_create(state: &OpState, #[string] input: &str) -> bool {
     let shared = state.borrow::<SharedState>().clone();
     let mut state = shared.borrow_mut();
     let node = NodeId::new(input.node);
-    if state.dom.as_ref().and_then(|dom| dom.get_node(node)).is_none() {
+    if state
+        .dom
+        .as_ref()
+        .and_then(|dom| dom.get_node(node))
+        .is_none()
+    {
         return false;
     }
     let start_time_ms = waapi_document_time_ms(&state);
@@ -5031,40 +5074,41 @@ fn op_waapi_create(state: &OpState, #[string] input: &str) -> bool {
     } else {
         input.iterations
     };
-    state.animation_timeline.register_waapi(obscura_render::WaapiAnimation {
-        id: input.id,
-        node,
-        keyframes: input.keyframes.into_iter().map(|frame| obscura_render::WaapiKeyframe {
-            offset: frame.offset.clamp(0.0, 1.0),
-            opacity: frame.opacity.map(|value| value.clamp(0.0, 1.0)),
-            transform: frame.transform,
-        }).collect(),
-        timing: obscura_render::AnimationTiming {
-            duration_ms: input.duration,
-            delay_ms: input.delay,
-            iteration_count: iterations,
-            direction,
-            fill_mode,
-            play_state: obscura_render::AnimationPlayState::Running,
-        },
-        easing: input.easing_bezier,
-        linear_easing: input.linear_easing,
-        start_time_ms,
-        hold_time_ms: None,
-        play_state: obscura_render::WaapiPlayState::Running,
-    });
+    state
+        .animation_timeline
+        .register_waapi(obscura_render::WaapiAnimation {
+            id: input.id,
+            node,
+            keyframes: input
+                .keyframes
+                .into_iter()
+                .map(|frame| obscura_render::WaapiKeyframe {
+                    offset: frame.offset.clamp(0.0, 1.0),
+                    opacity: frame.opacity.map(|value| value.clamp(0.0, 1.0)),
+                    transform: frame.transform,
+                })
+                .collect(),
+            timing: obscura_render::AnimationTiming {
+                duration_ms: input.duration,
+                delay_ms: input.delay,
+                iteration_count: iterations,
+                direction,
+                fill_mode,
+                play_state: obscura_render::AnimationPlayState::Running,
+            },
+            easing: input.easing_bezier,
+            linear_easing: input.linear_easing,
+            start_time_ms,
+            hold_time_ms: None,
+            play_state: obscura_render::WaapiPlayState::Running,
+        });
     invalidate_waapi_render(&mut state, node);
     true
 }
 
 #[cfg(feature = "render")]
 #[op2(fast)]
-fn op_waapi_control(
-    state: &OpState,
-    id: f64,
-    #[string] action: &str,
-    value: f64,
-) -> bool {
+fn op_waapi_control(state: &OpState, id: f64, #[string] action: &str, value: f64) -> bool {
     if !id.is_finite() || id < 0.0 {
         return false;
     }
@@ -5088,11 +5132,11 @@ fn op_waapi_control(
             obscura_render::WaapiPlayState::Running,
             document_time,
         ),
-        "currentTime" if value.is_finite() => state.animation_timeline.set_waapi_current_time(
-            id,
-            document_time,
-            value as f32,
-        ),
+        "currentTime" if value.is_finite() => {
+            state
+                .animation_timeline
+                .set_waapi_current_time(id, document_time, value as f32)
+        }
         _ => false,
     };
     if changed {
@@ -5192,17 +5236,14 @@ pub(crate) fn ensure_prepared_render(
     let render_media = state.render_media;
     let animation_sample = state.animation_sample;
     let incompatible = state.prepared_render.as_ref().is_some_and(|prepared| {
-        prepared.viewport() != viewport
-            || prepared.base_url() != base_url.as_deref()
+        prepared.viewport() != viewport || prepared.base_url() != base_url.as_deref()
     });
     let needs_rebuild = state.prepared_render.as_ref().map_or(true, |prepared| {
         incompatible || prepared.animation_sample() != animation_sample
     }) || !state.pending_style_mutations.is_empty();
     if needs_rebuild {
         if let Some(dom) = state.dom.as_ref() {
-            state
-                .animation_timeline
-                .materialize_start_candidates(dom);
+            state.animation_timeline.materialize_start_candidates(dom);
         }
         let previous = (!incompatible && render_media == obscura_render::CssMediaType::Screen)
             .then(|| state.prepared_render.take())
@@ -5263,10 +5304,7 @@ pub(crate) fn ensure_prepared_render(
         if animation_sample.mode == obscura_render::AnimationSampleMode::DocumentTime {
             state.animation_timeline.clear_start_candidates();
         }
-        let connected = state
-            .dom
-            .as_ref()
-            .map(shadow_including_connected_nodes);
+        let connected = state.dom.as_ref().map(shadow_including_connected_nodes);
         if let Some(connected) = connected {
             state
                 .animation_timeline
@@ -5283,9 +5321,7 @@ pub(crate) fn ensure_prepared_render(
 /// styles. `animation_sample` on PreparedRender remains behind intentionally,
 /// making a later paint or computed-style consumer take the exact path above.
 #[cfg(feature = "render")]
-fn ensure_prepared_geometry(
-    state: &mut ObscuraState,
-) -> Option<&obscura_render::PreparedRender> {
+fn ensure_prepared_geometry(state: &mut ObscuraState) -> Option<&obscura_render::PreparedRender> {
     let base_url = document_base_url(state);
     let reusable = state.pending_style_mutations.is_empty()
         && !state.animation_timeline.has_pending_start_candidates()
@@ -5308,8 +5344,8 @@ pub(crate) fn sample_live_document_animations(state: &mut ObscuraState) {
     }
     state.animation_sampled_task_generation = state.animation_task_generation;
     let sample = obscura_render::AnimationSample::document(
-        (state.animation_timeline_origin.elapsed().as_secs_f64() * 1_000.0)
-            .min(f64::from(f32::MAX)) as f32,
+        (state.animation_timeline_origin.elapsed().as_secs_f64() * 1_000.0).min(f64::from(f32::MAX))
+            as f32,
     );
     if state.animation_sample == sample {
         return;
@@ -5317,15 +5353,15 @@ pub(crate) fn sample_live_document_animations(state: &mut ObscuraState) {
     if sample.time.milliseconds > state.animation_sample.time.milliseconds
         && state.animation_sample.mode == obscura_render::AnimationSampleMode::DocumentTime
         && state.pending_style_mutations.is_empty()
-        && state.prepared_render.as_mut().is_some_and(|prepared| {
-            prepared.advance_inactive_animation_sample_time(sample.time)
-        })
+        && state
+            .prepared_render
+            .as_mut()
+            .is_some_and(|prepared| prepared.advance_inactive_animation_sample_time(sample.time))
     {
         state.animation_sample = sample;
         return;
     }
-    let forward_document_sample =
-        sample.mode == obscura_render::AnimationSampleMode::DocumentTime
+    let forward_document_sample = sample.mode == obscura_render::AnimationSampleMode::DocumentTime
         && state.animation_sample.mode == obscura_render::AnimationSampleMode::DocumentTime
         && sample.time.milliseconds > state.animation_sample.time.milliseconds;
     state.animation_sample = sample;
@@ -5519,12 +5555,10 @@ fn load_image_metadata_without_page_transport(gs: &mut ObscuraState, node_id: No
     let Some(dom) = gs.dom.as_ref() else {
         return serde_json::json!({ "ok": false, "currentSrc": "" }).to_string();
     };
-    let Some((current_src, density, dimensions)) = gs.render_resources.image_element_metadata(
-        dom,
-        node_id,
-        viewport,
-        base_url.as_deref(),
-    ) else {
+    let Some((current_src, density, dimensions)) =
+        gs.render_resources
+            .image_element_metadata(dom, node_id, viewport, base_url.as_deref())
+    else {
         return serde_json::json!({
             "state": "error",
             "ok": false,
@@ -5548,22 +5582,18 @@ fn finish_async_image_metadata(
 ) -> String {
     let gs = shared.borrow();
     if gs.document_generation != document_generation {
-        return serde_json::json!({ "state": "stale", "currentSrc": expected_url })
-            .to_string();
+        return serde_json::json!({ "state": "stale", "currentSrc": expected_url }).to_string();
     }
     let Some(dom) = gs.dom.as_ref() else {
-        return serde_json::json!({ "state": "stale", "currentSrc": expected_url })
-            .to_string();
+        return serde_json::json!({ "state": "stale", "currentSrc": expected_url }).to_string();
     };
     if image_request_profile(dom, node_id) != request_profile {
-        return serde_json::json!({ "state": "stale", "currentSrc": expected_url })
-            .to_string();
+        return serde_json::json!({ "state": "stale", "currentSrc": expected_url }).to_string();
     }
     let Some((current_src, density, known, dimensions)) =
         profiled_cached_image_metadata(&gs, node_id)
     else {
-        return serde_json::json!({ "state": "stale", "currentSrc": expected_url })
-            .to_string();
+        return serde_json::json!({ "state": "stale", "currentSrc": expected_url }).to_string();
     };
     if current_src != expected_url {
         return serde_json::json!({ "state": "stale", "currentSrc": current_src }).to_string();
@@ -5606,9 +5636,7 @@ async fn op_load_image_metadata(state: Rc<RefCell<OpState>>, nid: u32) -> String
             return serde_json::json!({ "state": "stale", "currentSrc": "" }).to_string();
         }
         let profile = image_request_profile(dom, node_id);
-        let Some((selected_url, _, known, _)) =
-            profiled_cached_image_metadata(&gs, node_id)
-        else {
+        let Some((selected_url, _, known, _)) = profiled_cached_image_metadata(&gs, node_id) else {
             return serde_json::json!({ "state": "error", "ok": false, "currentSrc": "" })
                 .to_string();
         };
@@ -5664,7 +5692,8 @@ async fn op_load_image_metadata(state: Rc<RefCell<OpState>>, nid: u32) -> String
             waiters.push(sender);
             Some(receiver)
         } else {
-            gs.render_image_in_flight.insert(request_key.clone(), Vec::new());
+            gs.render_image_in_flight
+                .insert(request_key.clone(), Vec::new());
             None
         }
     };
@@ -5722,11 +5751,7 @@ async fn op_load_image_metadata(state: Rc<RefCell<OpState>>, nid: u32) -> String
             http_client
                 .as_ref()
                 .unwrap()
-                .fetch_resource_with_callbacks(
-                    parsed_url,
-                    resource_request,
-                    callbacks.as_deref(),
-                )
+                .fetch_resource_with_callbacks(parsed_url, resource_request, callbacks.as_deref())
                 .await
                 .ok()
         }
@@ -5784,10 +5809,7 @@ pub(crate) fn clamp_scroll_offset(state: &mut ObscuraState, requested: (f32, f32
 }
 
 #[cfg(feature = "render")]
-fn clamp_scroll_offset_for_geometry(
-    state: &mut ObscuraState,
-    requested: (f32, f32),
-) -> (f32, f32) {
+fn clamp_scroll_offset_for_geometry(state: &mut ObscuraState, requested: (f32, f32)) -> (f32, f32) {
     clamp_scroll_offset_for_consumer(state, requested, true)
 }
 
@@ -5910,10 +5932,10 @@ fn op_resize_observer_measurements(state: &OpState, #[string] nids_json: String)
             .unwrap_or_else(|_| "[]".to_string());
     };
 
-    let style_value =
-        |snapshot: &std::collections::HashMap<&'static str, String>, name: &'static str| {
-            snapshot.get(name).cloned().unwrap_or_default()
-        };
+    let style_value = |snapshot: &std::collections::HashMap<&'static str, String>,
+                       name: &'static str| {
+        snapshot.get(name).cloned().unwrap_or_default()
+    };
     let measurements = nids
         .into_iter()
         .map(|nid| {
@@ -5953,10 +5975,7 @@ fn op_resize_observer_measurements(state: &OpState, #[string] nids_json: String)
 #[cfg(feature = "render")]
 #[op2]
 #[string]
-fn op_intersection_observer_measurements(
-    state: &OpState,
-    #[string] nids_json: String,
-) -> String {
+fn op_intersection_observer_measurements(state: &OpState, #[string] nids_json: String) -> String {
     let nids = serde_json::from_str::<Vec<u32>>(&nids_json).unwrap_or_default();
     if nids.is_empty() {
         return "[]".to_string();
@@ -5978,10 +5997,10 @@ fn op_intersection_observer_measurements(
             .unwrap_or_else(|_| "[]".to_string());
     };
 
-    let style_value =
-        |snapshot: &std::collections::HashMap<&'static str, String>, name: &'static str| {
-            snapshot.get(name).cloned().unwrap_or_default()
-        };
+    let style_value = |snapshot: &std::collections::HashMap<&'static str, String>,
+                       name: &'static str| {
+        snapshot.get(name).cloned().unwrap_or_default()
+    };
     let measurements = nids
         .into_iter()
         .map(|nid| {

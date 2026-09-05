@@ -12,12 +12,16 @@ async fn cdp(
     params: Value,
     session_id: &str,
 ) -> obscura_cdp::types::CdpResponse {
-    dispatch(&CdpRequest {
-        id,
-        method: method.to_string(),
-        params,
-        session_id: Some(session_id.to_string()),
-    }, ctx).await
+    dispatch(
+        &CdpRequest {
+            id,
+            method: method.to_string(),
+            params,
+            session_id: Some(session_id.to_string()),
+        },
+        ctx,
+    )
+    .await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -29,28 +33,62 @@ async fn navigation_prunes_only_the_navigated_pages_stale_context_ids() {
     ctx.sessions.insert("second".to_string(), second_page);
 
     let stale = cdp(
-        &mut ctx, 1, "Page.createIsolatedWorld",
-        json!({"worldName": "first-world"}), "first",
-    ).await.result.unwrap()["executionContextId"].as_i64().unwrap();
+        &mut ctx,
+        1,
+        "Page.createIsolatedWorld",
+        json!({"worldName": "first-world"}),
+        "first",
+    )
+    .await
+    .result
+    .unwrap()["executionContextId"]
+        .as_i64()
+        .unwrap();
     let other_page = cdp(
-        &mut ctx, 2, "Page.createIsolatedWorld",
-        json!({"worldName": "second-world"}), "second",
-    ).await.result.unwrap()["executionContextId"].as_i64().unwrap();
+        &mut ctx,
+        2,
+        "Page.createIsolatedWorld",
+        json!({"worldName": "second-world"}),
+        "second",
+    )
+    .await
+    .result
+    .unwrap()["executionContextId"]
+        .as_i64()
+        .unwrap();
 
     cdp(
-        &mut ctx, 3, "Page.navigate",
+        &mut ctx,
+        3,
+        "Page.navigate",
         json!({"url": "data:text/html,<p>replacement</p>", "waitUntil": "load"}),
         "first",
-    ).await;
+    )
+    .await;
 
     let stale_result = cdp(
-        &mut ctx, 4, "Runtime.evaluate",
-        json!({"expression": "1", "contextId": stale}), "first",
-    ).await;
-    assert!(stale_result.error.unwrap().message.contains("Cannot find context"));
+        &mut ctx,
+        4,
+        "Runtime.evaluate",
+        json!({"expression": "1", "contextId": stale}),
+        "first",
+    )
+    .await;
+    assert!(stale_result
+        .error
+        .unwrap()
+        .message
+        .contains("Cannot find context"));
     let other_result = cdp(
-        &mut ctx, 5, "Runtime.evaluate",
-        json!({"expression": "1", "contextId": other_page}), "second",
-    ).await;
-    assert!(other_result.error.is_none(), "other page context was pruned");
+        &mut ctx,
+        5,
+        "Runtime.evaluate",
+        json!({"expression": "1", "contextId": other_page}),
+        "second",
+    )
+    .await;
+    assert!(
+        other_result.error.is_none(),
+        "other page context was pruned"
+    );
 }

@@ -24,12 +24,14 @@ pub fn canonical_domain(domain: &str) -> String {
     domain.trim().trim_start_matches('.').to_lowercase()
 }
 
+type CookieMap = HashMap<String, HashMap<(String, String), CookieEntry>>;
+
 pub struct CookieJar {
     /// domain -> (name, path) -> entry. RFC 6265 §5.3 identifies a cookie by
     /// (name, domain, path); the outer map scopes by domain and the inner key
     /// carries name+path so same-name cookies on different paths coexist
     /// instead of clobbering each other.
-    cookies: RwLock<HashMap<String, HashMap<(String, String), CookieEntry>>>,
+    cookies: RwLock<CookieMap>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -119,7 +121,8 @@ impl CookieJar {
         // Validate Domain against the response origin (RFC 6265): an unrelated
         // or public-suffix Domain is ignored so a response from attacker.test
         // cannot scope a cookie to victim.test (GHSA-f22c-8v6q-v6h6).
-        let (domain, host_only) = match resolve_cookie_domain(&request_host, domain_attr.as_deref()) {
+        let (domain, host_only) = match resolve_cookie_domain(&request_host, domain_attr.as_deref())
+        {
             Some(d) => d,
             None => return,
         };
@@ -151,7 +154,10 @@ impl CookieJar {
         };
 
         let mut cookies = self.cookies.write().unwrap();
-        cookies.entry(domain).or_default().insert((name, path), entry);
+        cookies
+            .entry(domain)
+            .or_default()
+            .insert((name, path), entry);
     }
 
     pub fn get_cookie_header(&self, url: &Url) -> String {
@@ -230,9 +236,10 @@ impl CookieJar {
             // RFC 6265 4.1.2.3: the leading dot is ignored. The Set-Cookie path already strips
             // it, but this code did not, which is why one cookie became two entries.
             let domain = canonical_domain(&cookie.domain);
-            if cookie.expires.is_some_and(|expires| {
-                expires == 0 || (expires > 0 && expires <= now)
-            }) {
+            if cookie
+                .expires
+                .is_some_and(|expires| expires == 0 || (expires > 0 && expires <= now))
+            {
                 if let Some(domain_cookies) = jar.get_mut(&domain) {
                     domain_cookies.retain(|_key, entry| {
                         entry.name != cookie.name || entry.path != cookie.path
@@ -245,7 +252,9 @@ impl CookieJar {
             } else {
                 normalize_same_site(&cookie.same_site)
             };
-            let expires = cookie.expires.and_then(|e| if e > 0 { Some(e as u64) } else { None });
+            let expires = cookie
+                .expires
+                .and_then(|e| if e > 0 { Some(e as u64) } else { None });
             let entry = CookieEntry {
                 name: cookie.name.clone(),
                 value: cookie.value,
@@ -259,7 +268,9 @@ impl CookieJar {
                 expires,
                 same_site,
             };
-            jar.entry(domain).or_default().insert((cookie.name, cookie.path), entry);
+            jar.entry(domain)
+                .or_default()
+                .insert((cookie.name, cookie.path), entry);
         }
     }
 
@@ -354,16 +365,14 @@ impl CookieJar {
                         }
                         _ => {}
                     }
-                } else {
-                    match attr.to_lowercase().as_str() {
-                        "secure" => secure = true,
-                        _ => {}
-                    }
+                } else if attr.eq_ignore_ascii_case("secure") {
+                    secure = true;
                 }
             }
         }
 
-        let (domain, host_only) = match resolve_cookie_domain(&request_host, domain_attr.as_deref()) {
+        let (domain, host_only) = match resolve_cookie_domain(&request_host, domain_attr.as_deref())
+        {
             Some(d) => d,
             None => return,
         };
@@ -395,7 +404,10 @@ impl CookieJar {
         };
 
         let mut cookies = self.cookies.write().unwrap();
-        cookies.entry(domain).or_default().insert((name, path), entry);
+        cookies
+            .entry(domain)
+            .or_default()
+            .insert((name, path), entry);
     }
 
     pub fn delete_cookie(&self, name: &str, domain: &str) {
@@ -460,15 +472,13 @@ impl CookieJar {
             }
         }
 
-        let json = serde_json::to_string_pretty(&all).map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-        })?;
+        let json = serde_json::to_string_pretty(&all)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut tmp = tempfile::NamedTempFile::new_in(
-            path.parent().unwrap_or(std::path::Path::new(".")),
-        )?;
+        let mut tmp =
+            tempfile::NamedTempFile::new_in(path.parent().unwrap_or(std::path::Path::new(".")))?;
         tmp.write_all(json.as_bytes())?;
         tmp.persist(path).map_err(|e| e.error)?;
         Ok(())
@@ -482,13 +492,163 @@ impl CookieJar {
             return Ok(0);
         }
         let data = std::fs::read_to_string(path)?;
-        let cookies: Vec<CookieInfo> =
-            serde_json::from_str(&data).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e)
-            })?;
+        let cookies: Vec<CookieInfo> = serde_json::from_str(&data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let count = cookies.len();
         self.set_cookies_from_cdp(cookies);
         Ok(count)
+    }
+
+    /// Import cookies and origins from a Playwright/Reach storage state JSON object.
+    /// Session cookies (expires <= 0.0 or None) are preserved and not purged.
+    /// Returns the number of cookies loaded and the list of origin storage items.
+    pub fn import_storage_state(
+        &self,
+        v: &serde_json::Value,
+    ) -> Result<(usize, Vec<StorageStateOrigin>), serde_json::Error> {
+        let state: StorageState = if let Some(s) = v.as_str() {
+            serde_json::from_str(s)?
+        } else if v.is_array() {
+            let cookies: Vec<StorageStateCookie> = serde_json::from_value(v.clone())?;
+            StorageState {
+                cookies,
+                origins: Vec::new(),
+                jar_version: 0,
+            }
+        } else {
+            serde_json::from_value(v.clone())?
+        };
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut jar = self.cookies.write().unwrap();
+        let mut count = 0;
+
+        for cookie in state.cookies {
+            let domain = canonical_domain(&cookie.domain);
+            if domain.is_empty() {
+                continue;
+            }
+
+            // Expiration: <= 0.0 is a session cookie (never expired on import).
+            // Only strictly positive expiration timestamps are compared to now.
+            let (is_expired, expires_u64) = match cookie.expires {
+                Some(exp) if exp > 0.0 => {
+                    let exp_u64 = exp as u64;
+                    (exp_u64 <= now, Some(exp_u64))
+                }
+                _ => (false, None),
+            };
+
+            if is_expired {
+                if let Some(domain_cookies) = jar.get_mut(&domain) {
+                    domain_cookies.retain(|_key, entry| {
+                        entry.name != cookie.name || entry.path != cookie.path
+                    });
+                }
+                continue;
+            }
+
+            let path = if cookie.path.is_empty() {
+                "/".to_string()
+            } else {
+                cookie.path.clone()
+            };
+
+            let same_site = if cookie.same_site.is_empty() {
+                DEFAULT_SAME_SITE.to_string()
+            } else {
+                normalize_same_site(&cookie.same_site)
+            };
+
+            // Playwright standard: leading dot indicates domain cookie, absence indicates host-only.
+            let host_only = !cookie.domain.starts_with('.');
+
+            let entry = CookieEntry {
+                name: cookie.name.clone(),
+                value: cookie.value,
+                path: path.clone(),
+                domain: domain.clone(),
+                host_only,
+                secure: cookie.secure,
+                http_only: cookie.http_only,
+                expires: expires_u64,
+                same_site,
+            };
+
+            jar.entry(domain)
+                .or_default()
+                .insert((cookie.name, path), entry);
+            count += 1;
+        }
+
+        Ok((count, state.origins))
+    }
+
+    /// Export all non-expired cookies in Playwright standard format.
+    /// Playwright uses `httpOnly`, `sameSite`, and `expires: -1.0` for session cookies.
+    pub fn export_storage_state_cookies(&self) -> Vec<serde_json::Value> {
+        let cookies = self.cookies.read().unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut result = Vec::new();
+        for domain_cookies in cookies.values() {
+            for entry in domain_cookies.values() {
+                if let Some(exp) = entry.expires {
+                    if exp <= now {
+                        continue;
+                    }
+                }
+
+                let domain = if entry.host_only || entry.domain.starts_with('.') {
+                    entry.domain.clone()
+                } else {
+                    format!(".{}", entry.domain)
+                };
+
+                let same_site = if entry.same_site.is_empty() {
+                    DEFAULT_SAME_SITE.to_string()
+                } else {
+                    normalize_same_site(&entry.same_site)
+                };
+
+                let expires = entry.expires.map(|e| e as f64).unwrap_or(-1.0);
+
+                result.push(serde_json::json!({
+                    "name": entry.name,
+                    "value": entry.value,
+                    "domain": domain,
+                    "path": entry.path,
+                    "expires": expires,
+                    "httpOnly": entry.http_only,
+                    "secure": entry.secure,
+                    "sameSite": same_site,
+                }));
+            }
+        }
+
+        result.sort_by(|a, b| {
+            let d_a = a.get("domain").and_then(|v| v.as_str()).unwrap_or("");
+            let d_b = b.get("domain").and_then(|v| v.as_str()).unwrap_or("");
+            let p_a = a.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let p_b = b.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let n_a = a.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let n_b = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            (d_a, p_a, n_a).cmp(&(d_b, p_b, n_b))
+        });
+
+        result
+    }
+
+    /// Sanitize a domain string matching reach's domain sanitization.
+    pub fn sanitize_domain(domain: &str) -> String {
+        sanitize_domain(domain)
     }
 }
 
@@ -496,6 +656,170 @@ impl Default for CookieJar {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn root_path() -> String {
+    "/".into()
+}
+
+/// Sanitize a domain string matching reach's domain sanitization
+/// (strip protocol, www, trailing dots, invalid chars).
+pub fn sanitize_domain(domain: &str) -> String {
+    let mut s = domain.trim();
+
+    // Strip scheme if present (e.g. "https://", "http://", "ftp://")
+    if let Some(pos) = s.find("://") {
+        s = &s[pos + 3..];
+    } else if let Some(stripped) = s.strip_prefix("//") {
+        s = stripped;
+    }
+
+    // Strip path, query, and fragment (e.g. "/login", "?foo=bar", "#fragment")
+    if let Some(pos) = s.find(['/', '?', '#']) {
+        s = &s[..pos];
+    }
+
+    // Strip user info if present (e.g. "user:pass@host")
+    if let Some(pos) = s.rfind('@') {
+        s = &s[pos + 1..];
+    }
+
+    // Strip port if present (e.g. "github.com:443" or "[::1]:8080")
+    if s.starts_with('[') {
+        if let Some(end_bracket) = s.find(']') {
+            s = &s[..=end_bracket];
+        }
+    } else if let Some(pos) = s.rfind(':') {
+        let port_candidate = &s[pos + 1..];
+        if port_candidate.chars().all(|c| c.is_ascii_digit()) && !port_candidate.is_empty() {
+            s = &s[..pos];
+        }
+    }
+
+    let mut lower = s.to_ascii_lowercase();
+
+    // Repeatedly trim dots/underscores and strip leading "www."
+    loop {
+        let trimmed = lower.trim_matches(|c| c == '.' || c == '_' || c == '/');
+        if let Some(stripped) = trimmed.strip_prefix("www.") {
+            lower = stripped.to_string();
+        } else {
+            lower = trimmed.to_string();
+            break;
+        }
+    }
+
+    // Filter invalid characters (keep ascii alphanumeric, ., -, _)
+    let filtered: String = lower
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-' || *c == '_')
+        .collect();
+
+    // Strip leading and trailing dots and underscores
+    let trimmed = filtered.trim_matches(|c| c == '.' || c == '_');
+    if trimmed.is_empty() {
+        "default".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageStateCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    #[serde(default = "root_path")]
+    pub path: String,
+    #[serde(default)]
+    pub secure: bool,
+    #[serde(default, rename = "httpOnly", alias = "http_only")]
+    pub http_only: bool,
+    #[serde(default, rename = "sameSite", alias = "same_site")]
+    pub same_site: String,
+    #[serde(default)]
+    pub expires: Option<f64>,
+}
+
+impl StorageStateCookie {
+    pub fn to_cookie_info(&self) -> CookieInfo {
+        self.clone().into()
+    }
+}
+
+impl From<StorageStateCookie> for CookieInfo {
+    fn from(c: StorageStateCookie) -> Self {
+        let same_site = if c.same_site.is_empty() {
+            DEFAULT_SAME_SITE.to_string()
+        } else {
+            normalize_same_site(&c.same_site)
+        };
+        CookieInfo {
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            http_only: c.http_only,
+            same_site,
+            expires: c.expires.filter(|e| *e > 0.0).map(|e| e as i64),
+        }
+    }
+}
+
+impl From<CookieInfo> for StorageStateCookie {
+    fn from(c: CookieInfo) -> Self {
+        let same_site = if c.same_site.is_empty() {
+            DEFAULT_SAME_SITE.to_string()
+        } else {
+            normalize_same_site(&c.same_site)
+        };
+        StorageStateCookie {
+            name: c.name,
+            value: c.value,
+            domain: c.domain,
+            path: c.path,
+            secure: c.secure,
+            http_only: c.http_only,
+            same_site,
+            expires: c.expires.map(|e| e as f64).or(Some(-1.0)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum StorageItem {
+    Named { name: String, value: String },
+    Pair(String, String),
+}
+
+impl StorageItem {
+    pub fn into_kv(self) -> (String, String) {
+        match self {
+            Self::Named { name, value } => (name, value),
+            Self::Pair(k, v) => (k, v),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageStateOrigin {
+    pub origin: String,
+    #[serde(default, rename = "localStorage", alias = "local_storage")]
+    pub local_storage: Vec<StorageItem>,
+    #[serde(default, rename = "sessionStorage", alias = "session_storage")]
+    pub session_storage: Vec<StorageItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct StorageState {
+    #[serde(default)]
+    pub cookies: Vec<StorageStateCookie>,
+    #[serde(default)]
+    pub origins: Vec<StorageStateOrigin>,
+    #[serde(default)]
+    pub jar_version: u64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -513,17 +837,25 @@ pub struct CookieInfo {
     pub expires: Option<i64>,
 }
 
+#[allow(clippy::manual_is_multiple_of)]
 fn parse_http_date(s: &str) -> Result<u64, ()> {
-    let months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let months = [
+        "jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec",
+    ];
 
     let s = s.replace('-', " ");
     let parts: Vec<&str> = s.split_whitespace().collect();
 
-    if parts.len() < 5 { return Err(()); }
+    if parts.len() < 5 {
+        return Err(());
+    }
 
     let day: u64 = parts[1].parse().map_err(|_| ())?;
-    let month = months.iter().position(|m| parts[2].to_lowercase().starts_with(m))
-        .ok_or(())? as u64 + 1;
+    let month = months
+        .iter()
+        .position(|m| parts[2].to_lowercase().starts_with(m))
+        .ok_or(())? as u64
+        + 1;
     let year: u64 = parts[3].parse().map_err(|_| ())?;
 
     let time_parts: Vec<&str> = parts[4].split(':').collect();
@@ -533,7 +865,11 @@ fn parse_http_date(s: &str) -> Result<u64, ()> {
 
     let mut days_total: u64 = 0;
     for y in 1970..year {
-        days_total += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        days_total += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+            366
+        } else {
+            365
+        };
     }
     let days_in_month = [0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
     let is_leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
@@ -630,9 +966,15 @@ fn domain_matches(host: &str, domain: &str) -> bool {
     // domain = "example.com". The byte before the suffix in host
     // must be '.'.
     let prefix_len = host.len() - domain.len();
-    if prefix_len < 1 { return false; }
-    if !host.is_char_boundary(prefix_len) { return false; }
-    if host.as_bytes()[prefix_len - 1] != b'.' { return false; }
+    if prefix_len < 1 {
+        return false;
+    }
+    if !host.is_char_boundary(prefix_len) {
+        return false;
+    }
+    if host.as_bytes()[prefix_len - 1] != b'.' {
+        return false;
+    }
     host[prefix_len..].eq_ignore_ascii_case(domain)
 }
 
@@ -729,10 +1071,22 @@ mod tests {
 
         let header_a = jar.get_cookie_header(&Url::parse("https://example.com/a/page").unwrap());
         let header_b = jar.get_cookie_header(&Url::parse("https://example.com/b/page").unwrap());
-        assert!(header_a.contains("id=1"), "/a must see the Path=/a cookie, got: {header_a:?}");
-        assert!(header_b.contains("id=2"), "/b must see the Path=/b cookie, got: {header_b:?}");
-        assert!(!header_a.contains("id=2"), "Path=/b cookie leaked to /a: {header_a:?}");
-        assert!(!header_b.contains("id=1"), "Path=/a cookie leaked to /b: {header_b:?}");
+        assert!(
+            header_a.contains("id=1"),
+            "/a must see the Path=/a cookie, got: {header_a:?}"
+        );
+        assert!(
+            header_b.contains("id=2"),
+            "/b must see the Path=/b cookie, got: {header_b:?}"
+        );
+        assert!(
+            !header_a.contains("id=2"),
+            "Path=/b cookie leaked to /a: {header_a:?}"
+        );
+        assert!(
+            !header_b.contains("id=1"),
+            "Path=/a cookie leaked to /b: {header_b:?}"
+        );
     }
 
     #[test]
@@ -745,7 +1099,10 @@ mod tests {
         jar.set_cookie("id=2; Path=/a", &url);
         let header = jar.get_cookie_header(&url);
         assert!(header.contains("id=2"), "newer value must win: {header:?}");
-        assert!(!header.contains("id=1"), "old value must be replaced: {header:?}");
+        assert!(
+            !header.contains("id=1"),
+            "old value must be replaced: {header:?}"
+        );
     }
 
     #[test]
@@ -760,8 +1117,14 @@ mod tests {
 
         let header_a = jar.get_cookie_header(&Url::parse("https://example.com/a/page").unwrap());
         let header_b = jar.get_cookie_header(&Url::parse("https://example.com/b/page").unwrap());
-        assert!(header_a.is_empty(), "Path=/a cookie should be deleted: {header_a:?}");
-        assert!(header_b.contains("id=2"), "Path=/b cookie must survive: {header_b:?}");
+        assert!(
+            header_a.is_empty(),
+            "Path=/a cookie should be deleted: {header_a:?}"
+        );
+        assert!(
+            header_b.contains("id=2"),
+            "Path=/b cookie must survive: {header_b:?}"
+        );
     }
 
     #[test]
@@ -787,10 +1150,7 @@ mod tests {
         let jar = CookieJar::new();
         let url = Url::parse("https://example.com/").unwrap();
         jar.set_cookie_from_js("old=current", &url);
-        jar.set_cookie_from_js(
-            "old=gone; Expires=Thu, 01 Jan 2020 00:00:00 GMT",
-            &url,
-        );
+        jar.set_cookie_from_js("old=gone; Expires=Thu, 01 Jan 2020 00:00:00 GMT", &url);
         assert!(jar.get_all_cookies().is_empty());
     }
 
@@ -888,7 +1248,10 @@ mod tests {
     }
 
     fn marker(jar: &CookieJar) -> Vec<CookieInfo> {
-        jar.get_all_cookies().into_iter().filter(|c| c.name == "marker").collect()
+        jar.get_all_cookies()
+            .into_iter()
+            .filter(|c| c.name == "marker")
+            .collect()
     }
 
     #[test]
@@ -900,10 +1263,18 @@ mod tests {
         jar.set_cookies_from_cdp(vec![cdp("marker", "stale", ".example.com", "/")]);
         jar.set_cookie("marker=fresh; Domain=example.com; Path=/", &url);
 
-        assert_eq!(marker(&jar).len(), 1, "one cookie, one entry, got: {:?}", marker(&jar));
+        assert_eq!(
+            marker(&jar).len(),
+            1,
+            "one cookie, one entry, got: {:?}",
+            marker(&jar)
+        );
         let header = jar.get_cookie_header(&url);
         assert_eq!(header.matches("marker=").count(), 1, "header: {header:?}");
-        assert!(header.contains("marker=fresh"), "newer value must win: {header:?}");
+        assert!(
+            header.contains("marker=fresh"),
+            "newer value must win: {header:?}"
+        );
     }
 
     #[test]
@@ -916,7 +1287,11 @@ mod tests {
 
         let all = marker(&jar);
         assert_eq!(all.len(), 1, "both spellings collapse, got: {all:?}");
-        assert_eq!(all[0].domain, "example.com", "entry.domain is canonical, got: {:?}", all[0].domain);
+        assert_eq!(
+            all[0].domain, "example.com",
+            "entry.domain is canonical, got: {:?}",
+            all[0].domain
+        );
         assert_eq!(all[0].value, "two", "newer value must win");
     }
 
@@ -946,7 +1321,11 @@ mod tests {
             let mut gone = cdp("marker", "", deleted, "/");
             gone.expires = Some(0);
             jar.set_cookies_from_cdp(vec![gone]);
-            assert!(marker(&jar).is_empty(), "stored {stored:?}, deleted {deleted:?}: {:?}", marker(&jar));
+            assert!(
+                marker(&jar).is_empty(),
+                "stored {stored:?}, deleted {deleted:?}: {:?}",
+                marker(&jar)
+            );
         }
     }
 
@@ -956,12 +1335,20 @@ mod tests {
             let jar = CookieJar::new();
             jar.set_cookies_from_cdp(vec![cdp("marker", "current", "Example.COM", "/")]);
             jar.delete_cookie("marker", spelling);
-            assert!(marker(&jar).is_empty(), "delete_cookie({spelling:?}): {:?}", marker(&jar));
+            assert!(
+                marker(&jar).is_empty(),
+                "delete_cookie({spelling:?}): {:?}",
+                marker(&jar)
+            );
 
             let jar = CookieJar::new();
             jar.set_cookies_from_cdp(vec![cdp("marker", "current", "Example.COM", "/")]);
             jar.delete_cookies_filtered("marker", spelling, Some("/"));
-            assert!(marker(&jar).is_empty(), "delete_cookies_filtered({spelling:?}): {:?}", marker(&jar));
+            assert!(
+                marker(&jar).is_empty(),
+                "delete_cookies_filtered({spelling:?}): {:?}",
+                marker(&jar)
+            );
         }
     }
 
@@ -1103,7 +1490,11 @@ mod tests {
         }]);
         let url = Url::parse("https://www.xiaohongshu.com/explore").unwrap();
         let header = jar.get_cookie_header(&url);
-        assert!(header.contains("session=abc"), "Cookie header was: '{}'", header);
+        assert!(
+            header.contains("session=abc"),
+            "Cookie header was: '{}'",
+            header
+        );
     }
 
     #[test]
@@ -1112,22 +1503,26 @@ mod tests {
         use std::io::Write;
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("cookies.json");
-        
+
         // Write cookies like we exported from Chrome
         let cookies = serde_json::json!([
             {"name": "a1", "value": "testval", "domain": "xiaohongshu.com", "path": "/", "secure": false, "httpOnly": false},
             {"name": "web_session", "value": "sess123", "domain": "xiaohongshu.com", "path": "/", "secure": false, "httpOnly": true},
         ]);
         std::fs::write(&path, serde_json::to_string(&cookies).unwrap()).unwrap();
-        
+
         let jar = CookieJar::new();
         let count = jar.load_from_file(&path).unwrap();
         assert_eq!(count, 2, "Should load 2 cookies");
-        
+
         let url = Url::parse("https://www.xiaohongshu.com/explore").unwrap();
         let header = jar.get_cookie_header(&url);
         assert!(header.contains("a1=testval"), "Missing a1 in: '{}'", header);
-        assert!(header.contains("web_session=sess123"), "Missing web_session in: '{}'", header);
+        assert!(
+            header.contains("web_session=sess123"),
+            "Missing web_session in: '{}'",
+            header
+        );
     }
 
     #[test]
@@ -1277,5 +1672,126 @@ mod tests {
             "JS cookie not visible at sibling path: {}",
             jar.get_js_visible_cookies(&checkout)
         );
+    }
+
+    #[test]
+    fn test_playwright_storage_state_roundtrip() {
+        let fixture = serde_json::json!({
+            "cookies": [
+                {
+                    "name": "session_id",
+                    "value": "secret123",
+                    "domain": "example.com",
+                    "path": "/",
+                    "expires": -1.0,
+                    "httpOnly": true,
+                    "secure": true,
+                    "sameSite": "Strict"
+                }
+            ],
+            "origins": [
+                {
+                    "origin": "https://example.com",
+                    "localStorage": [
+                        { "name": "token", "value": "tok_xyz" }
+                    ],
+                    "sessionStorage": [
+                        [ "temp_key", "temp_val" ]
+                    ]
+                }
+            ]
+        });
+
+        let jar = CookieJar::new();
+        let (count, origins) = jar.import_storage_state(&fixture).expect("import succeeds");
+        assert_eq!(count, 1, "One cookie should be imported");
+        assert_eq!(origins.len(), 1, "One origin should be parsed");
+        assert_eq!(origins[0].origin, "https://example.com");
+        assert_eq!(origins[0].local_storage.len(), 1);
+        assert_eq!(
+            origins[0].local_storage[0].clone().into_kv(),
+            ("token".into(), "tok_xyz".into())
+        );
+        assert_eq!(origins[0].session_storage.len(), 1);
+        assert_eq!(
+            origins[0].session_storage[0].clone().into_kv(),
+            ("temp_key".into(), "temp_val".into())
+        );
+
+        // Check that session cookie was not purged and is sent for example.com
+        let url = Url::parse("https://example.com/api").unwrap();
+        let header = jar.get_cookie_header(&url);
+        assert!(
+            header.contains("session_id=secret123"),
+            "Session cookie was preserved and sent"
+        );
+
+        // Host-only: should NOT be sent to a subdomain
+        let sub_url = Url::parse("https://sub.example.com/api").unwrap();
+        assert!(
+            !jar.get_cookie_header(&sub_url)
+                .contains("session_id=secret123"),
+            "Host-only cookie not sent to subdomain"
+        );
+
+        // Export storage state cookies
+        let exported = jar.export_storage_state_cookies();
+        assert_eq!(exported.len(), 1);
+        let c = &exported[0];
+        assert_eq!(c["name"], "session_id");
+        assert_eq!(c["value"], "secret123");
+        assert_eq!(c["domain"], "example.com"); // Host-only preserved without dot
+        assert_eq!(c["path"], "/");
+        assert_eq!(c["expires"], -1.0); // Session cookie expiry preserved as -1.0
+        assert_eq!(c["httpOnly"], true); // httpOnly preserved
+        assert_eq!(c["secure"], true);
+        assert_eq!(c["sameSite"], "Strict"); // sameSite preserved
+
+        // Roundtrip: import the exported cookies back into a new jar
+        let roundtrip_fixture = serde_json::json!({
+            "cookies": exported,
+            "origins": []
+        });
+        let jar2 = CookieJar::new();
+        let (count2, _) = jar2
+            .import_storage_state(&roundtrip_fixture)
+            .expect("roundtrip import succeeds");
+        assert_eq!(count2, 1);
+        let exported2 = jar2.export_storage_state_cookies();
+        assert_eq!(exported, exported2);
+    }
+
+    #[test]
+    fn test_sanitize_domain_cases() {
+        assert_eq!(
+            CookieJar::sanitize_domain("https://www.example.com/"),
+            "example.com"
+        );
+        assert_eq!(
+            CookieJar::sanitize_domain("http://www.google.com:8080/search?q=1#top"),
+            "google.com"
+        );
+        assert_eq!(
+            CookieJar::sanitize_domain("www.facebook.com"),
+            "facebook.com"
+        );
+        assert_eq!(
+            CookieJar::sanitize_domain("http://user:pass@www.gitlab.com:8443/auth"),
+            "gitlab.com"
+        );
+        assert_eq!(
+            CookieJar::sanitize_domain("...www.github.com..."),
+            "github.com"
+        );
+        assert_eq!(
+            CookieJar::sanitize_domain(".sub.domain.co.uk"),
+            "sub.domain.co.uk"
+        );
+        assert_eq!(
+            CookieJar::sanitize_domain("invalid*chars^in!domain.com"),
+            "invalidcharsindomain.com"
+        );
+        assert_eq!(CookieJar::sanitize_domain(""), "default");
+        assert_eq!(CookieJar::sanitize_domain("...___..."), "default");
     }
 }

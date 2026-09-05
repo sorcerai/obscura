@@ -93,9 +93,10 @@ pub async fn handle(
                     page.navigate_blank();
                     None
                 } else {
-                    page.navigate(url).await.ok().map(|_| {
-                        (page.frame_id.clone(), page.url_string())
-                    })
+                    page.navigate(url)
+                        .await
+                        .ok()
+                        .map(|_| (page.frame_id.clone(), page.url_string()))
                 }
             } else {
                 None
@@ -215,7 +216,9 @@ pub async fn handle(
                 .get("targetId")
                 .and_then(|v| v.as_str())
                 .ok_or("targetId required")?;
-            let mut sessions = ctx.sessions.iter()
+            let mut sessions = ctx
+                .sessions
+                .iter()
                 .filter(|(_, page_id)| page_id.as_str() == target_id)
                 .map(|(session_id, _)| session_id.clone())
                 .collect::<Vec<_>>();
@@ -483,13 +486,23 @@ mod tests {
             &json!({"targetId": page_id, "flatten": true}),
             &mut ctx,
             &parent_session,
-        ).await.unwrap()["sessionId"].as_str().unwrap().to_string();
+        )
+        .await
+        .unwrap()["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let second = handle(
             "attachToTarget",
             &json!({"targetId": page_id, "flatten": true}),
             &mut ctx,
             &parent_session,
-        ).await.unwrap()["sessionId"].as_str().unwrap().to_string();
+        )
+        .await
+        .unwrap()["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
         ctx.pending_events.clear();
 
         handle(
@@ -497,9 +510,13 @@ mod tests {
             &json!({"targetId": page_id}),
             &mut ctx,
             &None,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
-        let detached = ctx.pending_events.iter()
+        let detached = ctx
+            .pending_events
+            .iter()
             .filter(|event| event.method == "Target.detachedFromTarget")
             .map(|event| event.params["sessionId"].as_str().unwrap())
             .collect::<Vec<_>>();

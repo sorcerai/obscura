@@ -146,7 +146,7 @@ impl ObscuraModuleLoader {
 }
 
 fn io_err(msg: String) -> ModuleLoaderError {
-    std::io::Error::new(std::io::ErrorKind::Other, msg).into()
+    std::io::Error::other(msg).into()
 }
 
 impl ModuleLoader for ObscuraModuleLoader {
@@ -165,9 +165,7 @@ impl ModuleLoader for ObscuraModuleLoader {
                 .map_err(|error| error.into());
         }
 
-        let base = if referrer.is_empty()
-            || referrer.starts_with('<')
-            || referrer == "about:blank"
+        let base = if referrer.is_empty() || referrer.starts_with('<') || referrer == "about:blank"
         {
             &self.base_url
         } else {
@@ -196,8 +194,8 @@ impl ModuleLoader for ObscuraModuleLoader {
         // the HTTP referrer for a dependency; keeping these URLs distinct
         // prevents a cross-origin parent module from gaining CDN cookies when
         // it imports a sibling on that CDN.
-        let document_url = ModuleSpecifier::parse(&self.base_url)
-            .unwrap_or_else(|_| module_specifier.clone());
+        let document_url =
+            ModuleSpecifier::parse(&self.base_url).unwrap_or_else(|_| module_specifier.clone());
         let referrer = maybe_referrer
             .cloned()
             .unwrap_or_else(|| document_url.clone());
@@ -268,13 +266,15 @@ impl ModuleLoader for ObscuraModuleLoader {
                         obscura_net::ResourceRequest::module_script(&document_url, &referrer);
                     #[cfg(feature = "stealth")]
                     let resp = match stealth {
-                        Some(stealth) => stealth
-                            .fetch_resource_with_callbacks(
-                                &requested,
-                                request,
-                                callbacks.as_deref(),
-                            )
-                            .await,
+                        Some(stealth) => {
+                            stealth
+                                .fetch_resource_with_callbacks(
+                                    &requested,
+                                    request,
+                                    callbacks.as_deref(),
+                                )
+                                .await
+                        }
                         None => {
                             client
                                 .fetch_resource_with_callbacks(
@@ -308,9 +308,7 @@ impl ModuleLoader for ObscuraModuleLoader {
                         io_err(format!("Invalid final module URL {}: {}", resp.url, e))
                     })?;
                     if found.as_str() != requested.as_str() {
-                        loaded_specifiers
-                            .borrow_mut()
-                            .push(found.to_string());
+                        loaded_specifiers.borrow_mut().push(found.to_string());
                     }
                     let code = obscura_net::decode_non_html(&resp.body, resp.content_type());
                     Ok(ModuleSource::new_with_redirect(

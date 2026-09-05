@@ -64,13 +64,19 @@ fn hn_shaped_table_lays_out_without_site_hardcoding() {
     let layout = layout_dom(&tree, (1000.0, 1000.0));
 
     // Every element got a rect; the tree isn't just being dropped.
-    assert!(layout.rects.len() > 10, "expected many laid-out elements, got {}", layout.rects.len());
+    assert!(
+        layout.rects.len() > 10,
+        "expected many laid-out elements, got {}",
+        layout.rects.len()
+    );
 
     // "Hacker News" (a bold link in the top bar) sits above the first
     // headline row ("Exapunks (2018)"): normal top-to-bottom flow, not a
     // hardcoded absolute position.
-    let (brand_x, brand_y) = find_by_text(&tree, &layout, "Hacker News").expect("brand text laid out");
-    let (_, headline_y) = find_by_text(&tree, &layout, "Exapunks (2018)").expect("headline text laid out");
+    let (brand_x, brand_y) =
+        find_by_text(&tree, &layout, "Hacker News").expect("brand text laid out");
+    let (_, headline_y) =
+        find_by_text(&tree, &layout, "Exapunks (2018)").expect("headline text laid out");
     assert!(
         headline_y > brand_y,
         "headline should be below the header bar: brand.y={} headline.y={}",
@@ -141,7 +147,10 @@ fn table_width_uses_local_space_and_keeps_width_hints_shrinkable() {
     let preferred = rect("preferred");
     let wide = rect("preferred-wide");
     let narrow = rect("preferred-narrow");
-    assert!((preferred.width - 200.0).abs() < 0.01, "preferred table: {preferred:?}");
+    assert!(
+        (preferred.width - 200.0).abs() < 0.01,
+        "preferred table: {preferred:?}"
+    );
     assert!(
         wide.width > 160.0
             && wide.width < 175.0
@@ -199,22 +208,31 @@ fn relative_units_resolve_against_viewport_and_font_size() {
     let html = r##"<div style="width:50vw;height:10em"></div>"##;
     let tree = parse_html(html);
     let layout = layout_dom(&tree, (1000.0, 800.0));
-    let hit = layout.rects.values().any(|r| (r.width - 500.0).abs() < 1.0 && (r.height - 160.0).abs() < 1.0);
-    assert!(hit, "expected a 500x160 box from 50vw/10em, rects: {:?}", layout.rects.values().map(|r| (r.width, r.height)).collect::<Vec<_>>());
+    let hit = layout
+        .rects
+        .values()
+        .any(|r| (r.width - 500.0).abs() < 1.0 && (r.height - 160.0).abs() < 1.0);
+    assert!(
+        hit,
+        "expected a 500x160 box from 50vw/10em, rects: {:?}",
+        layout
+            .rects
+            .values()
+            .map(|r| (r.width, r.height))
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn dynamic_viewport_units_use_the_live_viewport() {
-    let tree = parse_html(
-        r#"<body style="margin:0"><div style="width:25dvw;height:15dvh"></div></body>"#,
-    );
+    let tree =
+        parse_html(r#"<body style="margin:0"><div style="width:25dvw;height:15dvh"></div></body>"#);
     let layout = layout_dom(&tree, (1000.0, 800.0));
     assert!(
         layout
             .rects
             .values()
-            .any(|rect| (rect.width - 250.0).abs() < 0.01
-                && (rect.height - 120.0).abs() < 0.01),
+            .any(|rect| (rect.width - 250.0).abs() < 0.01 && (rect.height - 120.0).abs() < 0.01),
         "dvw/dvh should resolve against the capture viewport"
     );
 }
@@ -235,8 +253,7 @@ fn fixed_inset_box_uses_viewport_not_document_height() {
     for id in ["overlay", "surface"] {
         let rect = layout.rects[&tree.get_element_by_id(id).unwrap()];
         assert!(
-            (rect.width - 900.0).abs() < 0.01
-                && (rect.height - 1000.0).abs() < 0.01,
+            (rect.width - 900.0).abs() < 0.01 && (rect.height - 1000.0).abs() < 0.01,
             "{id} should fill the viewport rather than the 5000px document: {rect:?}"
         );
     }
@@ -259,7 +276,11 @@ fn percentage_padding_top_reserves_aspect_ratio_box() {
     assert!(
         hit,
         "expected a ~1000x562 aspect-ratio box from padding-top:56.25%, rects: {:?}",
-        layout.rects.values().map(|r| (r.width, r.height)).collect::<Vec<_>>()
+        layout
+            .rects
+            .values()
+            .map(|r| (r.width, r.height))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -288,12 +309,18 @@ fn percentage_padding_uses_final_flex_containing_block_width() {
     let second = rect("second");
     let second_sizer = rect("second-sizer");
 
-    assert!((first.width - 500.0).abs() < 0.01, "first flex item: {first:?}");
+    assert!(
+        (first.width - 500.0).abs() < 0.01,
+        "first flex item: {first:?}"
+    );
     assert!(
         (first_sizer.height - 275.0).abs() < 0.01,
         "55% padding must use the final 500px containing block: {first_sizer:?}"
     );
-    assert!((second.width - 450.0).abs() < 0.01, "second flex item: {second:?}");
+    assert!(
+        (second.width - 450.0).abs() < 0.01,
+        "second flex item: {second:?}"
+    );
     assert!(
         (second_sizer.height - 480.15).abs() < 0.51,
         "106.7% padding must use the final 450px containing block: {second_sizer:?}"
@@ -311,7 +338,9 @@ fn percentage_padding_uses_final_flex_containing_block_width() {
 
 #[test]
 fn final_flex_main_size_drives_auto_cross_size_through_aspect_ratio() {
-    let tree = parse_html(include_str!("../../../render-repros/flex-post-ratio-cross-size.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/flex-post-ratio-cross-size.html"
+    ));
     let layout = layout_dom(&tree, (1080.0, 1000.0));
     let rect = |id| layout.rects[&tree.get_element_by_id(id).unwrap()];
 
@@ -321,7 +350,10 @@ fn final_flex_main_size_drives_auto_cross_size_through_aspect_ratio() {
     let copy = rect("copy");
     let after = rect("after");
 
-    assert!((media.width - 520.0).abs() < 0.01, "flexed media width: {media:?}");
+    assert!(
+        (media.width - 520.0).abs() < 0.01,
+        "flexed media width: {media:?}"
+    );
     assert!(
         (media.height - 520.0 / 1.72).abs() < 0.51,
         "auto cross-size must use the final 520px main size: {media:?}"
@@ -379,7 +411,10 @@ fn post_flex_aspect_transfer_respects_content_and_border_boxes() {
         (border.width - 200.0).abs() < 0.01 && (border.height - 100.0).abs() < 0.01,
         "authored border-box ratio must apply to the outer box: {border:?}"
     );
-    assert!((row.height - 115.0).abs() < 0.01, "the tallest transferred cross-size sets the line: {row:?}");
+    assert!(
+        (row.height - 115.0).abs() < 0.01,
+        "the tallest transferred cross-size sets the line: {row:?}"
+    );
     assert!(
         (minimum.width - 200.0).abs() < 0.01 && (minimum.height - 130.0).abs() < 0.01,
         "the transferred cross-size must obey min-height: {minimum:?}"
@@ -445,8 +480,14 @@ fn mixed_percentage_padding_shorthand_preserves_fixed_sides_and_content_origin()
     let ink = layout.rects[&tree.get_element_by_id("ink").unwrap()];
     let padding = layout.styles[&mixed_id].padding;
 
-    assert!((mixed.width - 500.0).abs() < 0.01, "border-box width: {mixed:?}");
-    assert!((mixed.height - 85.0).abs() < 0.01, "mixed padding height: {mixed:?}");
+    assert!(
+        (mixed.width - 500.0).abs() < 0.01,
+        "border-box width: {mixed:?}"
+    );
+    assert!(
+        (mixed.height - 85.0).abs() < 0.01,
+        "mixed padding height: {mixed:?}"
+    );
     assert!(
         (padding.top - 50.0).abs() < 0.01
             && (padding.right - 20.0).abs() < 0.01
@@ -510,29 +551,57 @@ fn inset_absolute_uses_nearest_positioned_ancestor() {
     let cb = layout.rects[&tree.get_element_by_id("cb").expect("containing block")];
     let abs = layout.rects[&tree.get_element_by_id("abs").expect("absolute child")];
     let abs_end = layout.rects[&tree.get_element_by_id("abs-end").expect("end-inset child")];
-    let abs_percent = layout.rects[&tree.get_element_by_id("abs-percent").expect("percent-inset child")];
+    let abs_percent = layout.rects[&tree
+        .get_element_by_id("abs-percent")
+        .expect("percent-inset child")];
     let fixed = layout.rects[&tree.get_element_by_id("fixed").expect("fixed child")];
 
     // Absolute insets are measured from the positioned ancestor's padding
     // edge, not from the intervening static wrapper.
-    assert!((abs.x - cb.x - 25.0).abs() < 1.0, "wrong absolute x: cb={cb:?} abs={abs:?}");
-    assert!((abs.y - cb.y - 35.0).abs() < 1.0, "wrong absolute y: cb={cb:?} abs={abs:?}");
+    assert!(
+        (abs.x - cb.x - 25.0).abs() < 1.0,
+        "wrong absolute x: cb={cb:?} abs={abs:?}"
+    );
+    assert!(
+        (abs.y - cb.y - 35.0).abs() < 1.0,
+        "wrong absolute y: cb={cb:?} abs={abs:?}"
+    );
     assert_eq!(
         layout.styles[&tree.get_element_by_id("abs").unwrap()].display,
         obscura_render::Display::Block,
         "positioned inline should be blockified"
     );
-    assert!((abs_end.x - 350.0).abs() < 1.0, "wrong right-inset x: {abs_end:?}");
-    assert!((abs_end.y - 200.0).abs() < 1.0, "wrong bottom-inset y: {abs_end:?}");
-    assert!((abs_percent.x - 260.0).abs() < 1.0, "wrong percent-inset x: {abs_percent:?}");
-    assert!((abs_percent.y - 160.0).abs() < 1.0, "wrong percent-inset y: {abs_percent:?}");
-    assert!((fixed.x - 520.0).abs() < 1.0, "fixed box did not use viewport x: {fixed:?}");
-    assert!((fixed.y - 40.0).abs() < 1.0, "fixed box did not use viewport y: {fixed:?}");
+    assert!(
+        (abs_end.x - 350.0).abs() < 1.0,
+        "wrong right-inset x: {abs_end:?}"
+    );
+    assert!(
+        (abs_end.y - 200.0).abs() < 1.0,
+        "wrong bottom-inset y: {abs_end:?}"
+    );
+    assert!(
+        (abs_percent.x - 260.0).abs() < 1.0,
+        "wrong percent-inset x: {abs_percent:?}"
+    );
+    assert!(
+        (abs_percent.y - 160.0).abs() < 1.0,
+        "wrong percent-inset y: {abs_percent:?}"
+    );
+    assert!(
+        (fixed.x - 520.0).abs() < 1.0,
+        "fixed box did not use viewport x: {fixed:?}"
+    );
+    assert!(
+        (fixed.y - 40.0).abs() < 1.0,
+        "fixed box did not use viewport y: {fixed:?}"
+    );
 }
 
 #[test]
 fn absolute_auto_axes_preserve_static_position_after_reparenting() {
-    let tree = parse_html(include_str!("../../../render-repros/absolute-static-position.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/absolute-static-position.html"
+    ));
     let layout = layout_dom(&tree, (900.0, 1000.0));
     let rect = |id| layout.rects[&tree.get_element_by_id(id).unwrap()];
     let static_inline = rect("top-static-inline");
@@ -540,13 +609,11 @@ fn absolute_auto_axes_preserve_static_position_after_reparenting() {
     let outer_static = rect("outer-static");
     let nested_static = rect("nested-static");
     assert!(
-        (static_inline.x - 125.0).abs() < 0.01
-            && (static_inline.y - 60.0).abs() < 0.01,
+        (static_inline.x - 125.0).abs() < 0.01 && (static_inline.y - 60.0).abs() < 0.01,
         "static inline axis: {static_inline:?}"
     );
     assert!(
-        (static_block.x - 210.0).abs() < 0.01
-            && (static_block.y - 97.0).abs() < 0.01,
+        (static_block.x - 210.0).abs() < 0.01 && (static_block.y - 97.0).abs() < 0.01,
         "static block axis: {static_block:?}"
     );
     assert!(
@@ -554,8 +621,7 @@ fn absolute_auto_axes_preserve_static_position_after_reparenting() {
         "outer static candidate: {outer_static:?}"
     );
     assert!(
-        (nested_static.x - 154.0).abs() < 0.01
-            && (nested_static.y - 413.0).abs() < 0.01,
+        (nested_static.x - 154.0).abs() < 0.01 && (nested_static.y - 413.0).abs() < 0.01,
         "nested static candidate: {nested_static:?}"
     );
 }
@@ -603,8 +669,7 @@ fn legacy_center_keeps_block_flow_and_centers_descendants() {
         "table outer box is centered: {table:?}"
     );
     assert!(
-        (table_inline.x - 100.0).abs() < 0.01
-            && (table_inline.y - 80.0).abs() < 0.01,
+        (table_inline.x - 100.0).abs() < 0.01 && (table_inline.y - 80.0).abs() < 0.01,
         "table contents reset legacy alignment: {table_inline:?}"
     );
     assert!(
@@ -639,8 +704,7 @@ fn list_indentation_is_reset_from_the_container() {
     let ex_box = rect("#ex-box");
 
     assert!(
-        (default_item.x - 40.0).abs() < 0.01
-            && (default_item.width - 360.0).abs() < 0.01,
+        (default_item.x - 40.0).abs() < 0.01 && (default_item.width - 360.0).abs() < 0.01,
         "default list indentation: {default_item:?}"
     );
     assert!(
@@ -721,20 +785,46 @@ fn transforms_establish_absolute_and_fixed_containing_blocks() {
     // Layout rects precede paint transforms. Insets use the transformer's
     // padding box; the shared translate is recorded separately for the whole
     // DOM subtree.
-    assert!((abs.x - transformer.x - 25.0).abs() < 1.0, "wrong transformed abs x: transformer={transformer:?} abs={abs:?}");
-    assert!((abs.y - transformer.y - 30.0).abs() < 1.0, "wrong transformed abs y: transformer={transformer:?} abs={abs:?}");
-    assert!((fixed_transformed.x - transformer.x - 155.0).abs() < 1.0, "wrong transformed fixed x: {fixed_transformed:?}");
-    assert!((fixed_transformed.y - transformer.y - 105.0).abs() < 1.0, "wrong transformed fixed y: {fixed_transformed:?}");
+    assert!(
+        (abs.x - transformer.x - 25.0).abs() < 1.0,
+        "wrong transformed abs x: transformer={transformer:?} abs={abs:?}"
+    );
+    assert!(
+        (abs.y - transformer.y - 30.0).abs() < 1.0,
+        "wrong transformed abs y: transformer={transformer:?} abs={abs:?}"
+    );
+    assert!(
+        (fixed_transformed.x - transformer.x - 155.0).abs() < 1.0,
+        "wrong transformed fixed x: {fixed_transformed:?}"
+    );
+    assert!(
+        (fixed_transformed.y - transformer.y - 105.0).abs() < 1.0,
+        "wrong transformed fixed y: {fixed_transformed:?}"
+    );
     assert_eq!(layout.translates[&transformer_id], (30.0, 20.0));
-    assert!((identity_abs.x - identity_transform.x - 70.0).abs() < 1.0, "unsupported transform did not establish abs x: {identity_abs:?}");
-    assert!((identity_abs.y - identity_transform.y - 50.0).abs() < 1.0, "unsupported transform did not establish abs y: {identity_abs:?}");
-    assert!((fixed_viewport.x - 700.0).abs() < 1.0, "positioned ancestor captured fixed x: {fixed_viewport:?}");
-    assert!((fixed_viewport.y - 40.0).abs() < 1.0, "positioned ancestor captured fixed y: {fixed_viewport:?}");
+    assert!(
+        (identity_abs.x - identity_transform.x - 70.0).abs() < 1.0,
+        "unsupported transform did not establish abs x: {identity_abs:?}"
+    );
+    assert!(
+        (identity_abs.y - identity_transform.y - 50.0).abs() < 1.0,
+        "unsupported transform did not establish abs y: {identity_abs:?}"
+    );
+    assert!(
+        (fixed_viewport.x - 700.0).abs() < 1.0,
+        "positioned ancestor captured fixed x: {fixed_viewport:?}"
+    );
+    assert!(
+        (fixed_viewport.y - 40.0).abs() < 1.0,
+        "positioned ancestor captured fixed y: {fixed_viewport:?}"
+    );
 }
 
 #[test]
 fn modern_effects_establish_containing_blocks_independently() {
-    let tree = parse_html(include_str!("../../../render-repros/modern-containing-block-triggers.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/modern-containing-block-triggers.html"
+    ));
     let layout = layout_dom(&tree, (900.0, 700.0));
     let cases = [
         ("filter-cb", "filter-badge"),
@@ -746,8 +836,14 @@ fn modern_effects_establish_containing_blocks_independently() {
     for (cb_id, badge_id) in cases {
         let cb = layout.rects[&tree.get_element_by_id(cb_id).unwrap()];
         let badge = layout.rects[&tree.get_element_by_id(badge_id).unwrap()];
-        assert!((badge.x - cb.x - 75.0).abs() < 1.0, "{badge_id} wrong x: cb={cb:?} badge={badge:?}");
-        assert!((badge.y - cb.y - 55.0).abs() < 1.0, "{badge_id} wrong y: cb={cb:?} badge={badge:?}");
+        assert!(
+            (badge.x - cb.x - 75.0).abs() < 1.0,
+            "{badge_id} wrong x: cb={cb:?} badge={badge:?}"
+        );
+        assert!(
+            (badge.y - cb.y - 55.0).abs() < 1.0,
+            "{badge_id} wrong y: cb={cb:?} badge={badge:?}"
+        );
     }
 
     let filter_cb = layout.rects[&tree.get_element_by_id("filter-cb").unwrap()];
@@ -762,8 +858,14 @@ fn modern_effects_establish_containing_blocks_independently() {
     // Pinned Chromium 145 does not make container-type:inline-size a
     // positioning containing block. Keep it as a negative control.
     let container_badge = layout.rects[&tree.get_element_by_id("container-badge").unwrap()];
-    assert!((container_badge.x - 775.0).abs() < 1.0, "container-type control x: {container_badge:?}");
-    assert!((container_badge.y - 175.0).abs() < 1.0, "container-type control y: {container_badge:?}");
+    assert!(
+        (container_badge.x - 775.0).abs() < 1.0,
+        "container-type control x: {container_badge:?}"
+    );
+    assert!(
+        (container_badge.y - 175.0).abs() < 1.0,
+        "container-type control y: {container_badge:?}"
+    );
 }
 
 #[test]
@@ -781,13 +883,21 @@ fn long_text_run_wraps_across_multiple_lines() {
     let mut div_rect: Option<obscura_render::Rect> = None;
     for (id, rect) in &layout.rects {
         if tree.text_content(*id).contains("several lines") {
-            if div_rect.as_ref().map(|d| rect.width * rect.height < d.width * d.height).unwrap_or(true) {
+            if div_rect
+                .as_ref()
+                .map(|d| rect.width * rect.height < d.width * d.height)
+                .unwrap_or(true)
+            {
                 div_rect = Some(*rect);
             }
         }
     }
     let div_rect = div_rect.expect("text container laid out");
-    assert!(div_rect.width <= 101.0, "container should hold its 100px width, got {}", div_rect.width);
+    assert!(
+        div_rect.width <= 101.0,
+        "container should hold its 100px width, got {}",
+        div_rect.width
+    );
     assert!(
         div_rect.height > 60.0,
         "text should wrap onto several lines in a 100px-wide box (tall container), got height {}",
@@ -903,7 +1013,10 @@ fn percentage_flex_overlay_uses_auto_width_parent_content_box() {
     let body = layout.rects[&tree.get_element_by_id("body").unwrap()];
     let sidebar = layout.rects[&tree.get_element_by_id("sidebar").unwrap()];
     assert!((document.x - 16.0).abs() < 0.01, "document: {document:?}");
-    assert!((document.width - 1248.0).abs() < 0.01, "document: {document:?}");
+    assert!(
+        (document.width - 1248.0).abs() < 0.01,
+        "document: {document:?}"
+    );
     assert!((main.x - 16.0).abs() < 0.01, "main: {main:?}");
     assert!((body.x - 336.0).abs() < 0.01, "body: {body:?}");
     assert!((sidebar.x - 16.0).abs() < 0.01, "sidebar: {sidebar:?}");
@@ -1003,26 +1116,18 @@ fn native_float_clearance_is_side_sensitive() {
     let layout = layout_dom(&tree, (600.0, 300.0));
     let matching = tree.get_element_by_id("matching").unwrap();
     let other = tree.get_element_by_id("other-side").unwrap();
-    let matching_clear = tree
-        .query_selector("#matching .clear")
-        .unwrap()
-        .unwrap();
-    let other_clear = tree
-        .query_selector("#other-side .clear")
-        .unwrap()
-        .unwrap();
+    let matching_clear = tree.query_selector("#matching .clear").unwrap().unwrap();
+    let other_clear = tree.query_selector("#other-side .clear").unwrap().unwrap();
     let matching_rect = layout.rects[&matching];
     let other_rect = layout.rects[&other];
     let matching_clear_rect = layout.rects[&matching_clear];
     let other_clear_rect = layout.rects[&other_clear];
     assert!(
-        (matching_clear_rect.y - 50.0).abs() < 0.01
-            && (matching_rect.height - 60.0).abs() < 0.01,
+        (matching_clear_rect.y - 50.0).abs() < 0.01 && (matching_rect.height - 60.0).abs() < 0.01,
         "matching: {matching_rect:?} clear: {matching_clear_rect:?}"
     );
     assert!(
-        (other_clear_rect.y - 60.0).abs() < 0.01
-            && (other_rect.height - 50.0).abs() < 0.01,
+        (other_clear_rect.y - 60.0).abs() < 0.01 && (other_rect.height - 50.0).abs() < 0.01,
         "other: {other_rect:?} clear: {other_clear_rect:?}"
     );
 }
@@ -1115,16 +1220,36 @@ fn float_flow_zone_preserves_blocks_inline_runs_and_clearance() {
     let sponsors = rect("sponsors");
     let logos = rect("logos");
     let cleared = rect("cleared");
-    assert!((float.x - 650.0).abs() < 0.01 && (float.height - 400.0).abs() < 0.01, "float: {float:?}");
-    assert!((intro.x - 0.0).abs() < 0.01 && (intro.width - 650.0).abs() < 0.01, "intro: {intro:?}");
-    assert!((release.y - 100.0).abs() < 0.01 && (release.width - 650.0).abs() < 0.01, "release: {release:?}");
-    assert!((download.x - 0.0).abs() < 0.01 && (download.y - 150.0).abs() < 0.01, "download: {download:?}");
-    assert!((archive.x - 60.0).abs() < 0.01 && (archive.y - 150.0).abs() < 0.01, "archive: {archive:?}");
+    assert!(
+        (float.x - 650.0).abs() < 0.01 && (float.height - 400.0).abs() < 0.01,
+        "float: {float:?}"
+    );
+    assert!(
+        (intro.x - 0.0).abs() < 0.01 && (intro.width - 650.0).abs() < 0.01,
+        "intro: {intro:?}"
+    );
+    assert!(
+        (release.y - 100.0).abs() < 0.01 && (release.width - 650.0).abs() < 0.01,
+        "release: {release:?}"
+    );
+    assert!(
+        (download.x - 0.0).abs() < 0.01 && (download.y - 150.0).abs() < 0.01,
+        "download: {download:?}"
+    );
+    assert!(
+        (archive.x - 60.0).abs() < 0.01 && (archive.y - 150.0).abs() < 0.01,
+        "archive: {archive:?}"
+    );
     assert!((sponsors.y - 180.0).abs() < 0.01, "sponsors: {sponsors:?}");
     assert!((logos.y - 230.0).abs() < 0.01, "logos: {logos:?}");
-    assert!((cleared.y - 400.0).abs() < 0.01 && (cleared.width - 900.0).abs() < 0.01, "cleared: {cleared:?}");
     assert!(
-        !layout.rects.contains_key(&tree.get_element_by_id("mobile-duplicate").unwrap()),
+        (cleared.y - 400.0).abs() < 0.01 && (cleared.width - 900.0).abs() < 0.01,
+        "cleared: {cleared:?}"
+    );
+    assert!(
+        !layout
+            .rects
+            .contains_key(&tree.get_element_by_id("mobile-duplicate").unwrap()),
         "display:none duplicate generated a box"
     );
 }
@@ -1404,7 +1529,10 @@ fn min_height_floor_keeps_a_full_width_float_at_block_start() {
             && (float.height - 600.0).abs() < 0.01,
         "float: {float:?}"
     );
-    assert!((following.y - 600.0).abs() < 0.01, "following: {following:?}");
+    assert!(
+        (following.y - 600.0).abs() < 0.01,
+        "following: {following:?}"
+    );
 }
 
 #[test]
@@ -1452,7 +1580,9 @@ fn percentage_float_and_inline_sibling_share_definite_height_band() {
 
 #[test]
 fn replaced_image_contributes_intrinsic_size_in_ordered_grid() {
-    let tree = parse_html(include_str!("../../../render-repros/replaced-grid-order.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/replaced-grid-order.html"
+    ));
     let image_id = tree.get_element_by_id("image").unwrap();
     let intrinsic = HashMap::from([(image_id, (1.0, 1.0))]);
     let layout = layout_dom_with_images(&tree, (900.0, 1000.0), &intrinsic);
@@ -1483,7 +1613,9 @@ fn replaced_image_contributes_intrinsic_size_in_ordered_grid() {
 
 #[test]
 fn auto_block_wrapper_contains_percentage_replaced_child() {
-    let tree = parse_html(include_str!("../../../render-repros/replaced-block-wrapper.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/replaced-block-wrapper.html"
+    ));
     let image_id = tree.get_element_by_id("image").unwrap();
     let intrinsic = HashMap::from([(image_id, (720.0, 424.0))]);
     let layout = layout_dom_with_images(&tree, (900.0, 1000.0), &intrinsic);
@@ -1493,18 +1625,15 @@ fn auto_block_wrapper_contains_percentage_replaced_child() {
     let wrapper = rect("wrapper");
     let image = rect("image");
     assert!(
-        (media.x - 450.0).abs() < 0.01
-            && (media.width - 450.0).abs() < 0.01,
+        (media.x - 450.0).abs() < 0.01 && (media.width - 450.0).abs() < 0.01,
         "media: {media:?}"
     );
     assert!(
-        (frame.x - 450.0).abs() < 0.01
-            && (frame.width - 450.0).abs() < 0.01,
+        (frame.x - 450.0).abs() < 0.01 && (frame.width - 450.0).abs() < 0.01,
         "frame: {frame:?}"
     );
     assert!(
-        (wrapper.x - 498.0).abs() < 0.01
-            && (wrapper.width - 354.0).abs() < 0.01,
+        (wrapper.x - 498.0).abs() < 0.01 && (wrapper.width - 354.0).abs() < 0.01,
         "wrapper: {wrapper:?}"
     );
     assert!(
@@ -1517,7 +1646,9 @@ fn auto_block_wrapper_contains_percentage_replaced_child() {
 
 #[test]
 fn text_alignment_does_not_shrink_flex_items() {
-    let tree = parse_html(include_str!("../../../render-repros/text-align-flex-items.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/text-align-flex-items.html"
+    ));
     let layout = layout_dom(&tree, (900.0, 1000.0));
     let rect = |id| layout.rects[&tree.get_element_by_id(id).unwrap()];
     let stack = rect("stack");
@@ -1560,7 +1691,9 @@ fn text_alignment_does_not_shrink_block_children_or_wrap_inline_block_rows() {
         "text-align must not shrink-wrap an auto-width block child: {row:?}"
     );
     assert!(
-        items.windows(2).all(|pair| (pair[0].y - pair[1].y).abs() < 0.01),
+        items
+            .windows(2)
+            .all(|pair| (pair[0].y - pair[1].y).abs() < 0.01),
         "inline-block items should share one line when the block has room: {items:?}"
     );
     assert!(
@@ -1681,8 +1814,14 @@ fn absolute_inline_svg_keeps_percentage_width_and_view_box_ratio() {
     );
     let layout = layout_dom(&tree, (1000.0, 600.0));
     let art = layout.rects[&tree.get_element_by_id("art").unwrap()];
-    assert!((art.x - 640.0).abs() < 0.01, "percentage width must anchor from the right: {art:?}");
-    assert!((art.width - 160.0).abs() < 0.01, "percentage width: {art:?}");
+    assert!(
+        (art.x - 640.0).abs() < 0.01,
+        "percentage width must anchor from the right: {art:?}"
+    );
+    assert!(
+        (art.width - 160.0).abs() < 0.01,
+        "percentage width: {art:?}"
+    );
     assert!((art.height - 160.0).abs() < 0.01, "viewBox ratio: {art:?}");
 }
 
@@ -1772,7 +1911,9 @@ fn grid_item_intrinsic_height_keeps_negative_collapsed_margin() {
 
 #[test]
 fn inline_block_flex_items_keep_block_inner_flow() {
-    let tree = parse_html(include_str!("../../../render-repros/inline-block-flex-items.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/inline-block-flex-items.html"
+    ));
     let layout = layout_dom(&tree, (900.0, 1000.0));
     let rect = |id| layout.rects[&tree.get_element_by_id(id).unwrap()];
     let brand = rect("brand");
@@ -1829,7 +1970,9 @@ fn percentage_height_under_indefinite_parent_uses_content_height() {
 
 #[test]
 fn item_self_alignment_places_flex_and_grid_items() {
-    let tree = parse_html(include_str!("../../../render-repros/item-self-alignment.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/item-self-alignment.html"
+    ));
     let layout = layout_dom(&tree, (900.0, 1000.0));
     let rect = |id| layout.rects[&tree.get_element_by_id(id).unwrap()];
     let flex_center = rect("flex-center");
@@ -2064,8 +2207,7 @@ fn non_stretched_auto_grid_item_shrink_wraps_inside_grid_area() {
          panel={wide_panel:?} wrapper={wide_wrapper:?} inner={wide_inner:?}"
     );
     assert!(
-        (narrow_wrapper.x - 100.0).abs() < 0.01
-            && (narrow_wrapper.width - 200.0).abs() < 0.01,
+        (narrow_wrapper.x - 100.0).abs() < 0.01 && (narrow_wrapper.width - 200.0).abs() < 0.01,
         "a narrower item should keep its intrinsic width and remain centered: {narrow_wrapper:?}"
     );
 }
@@ -2230,7 +2372,9 @@ fn nested_is_descendant_utility_blockifies_matching_lines() {
 
 #[test]
 fn opposing_floats_share_header_band_through_inline_wrapper() {
-    let tree = parse_html(include_str!("../../../render-repros/opposing-header-floats.html"));
+    let tree = parse_html(include_str!(
+        "../../../render-repros/opposing-header-floats.html"
+    ));
     let layout = layout_dom(&tree, (900.0, 1000.0));
     let rect = |id| layout.rects[&tree.get_element_by_id(id).unwrap()];
     let logo = rect("logo");
@@ -3316,8 +3460,7 @@ fn percentage_max_replaced_items_shrink_in_a_flex_row() {
         </div>
         "#,
     );
-    let ids = ["i1", "i2", "i3", "i4", "i5"]
-        .map(|id| tree.get_element_by_id(id).unwrap());
+    let ids = ["i1", "i2", "i3", "i4", "i5"].map(|id| tree.get_element_by_id(id).unwrap());
     let intrinsic = HashMap::from([
         (ids[0], (303.0, 255.0)),
         (ids[1], (200.0, 400.0)),
@@ -3327,11 +3470,10 @@ fn percentage_max_replaced_items_shrink_in_a_flex_row() {
     ]);
     let layout = layout_dom_with_images(&tree, (1280.0, 1000.0), &intrinsic);
     let row = layout.rects[&tree.get_element_by_id("row").unwrap()];
-    let columns = ["c1", "c2", "c3", "c4", "c5"]
-        .map(|id| layout.rects[&tree.get_element_by_id(id).unwrap()]);
+    let columns =
+        ["c1", "c2", "c3", "c4", "c5"].map(|id| layout.rects[&tree.get_element_by_id(id).unwrap()]);
     let images = ids.map(|id| layout.rects[&id]);
-    let expected_widths: [f32; 5] =
-        [233.328125, 154.0, 385.03125, 154.015625, 225.625];
+    let expected_widths: [f32; 5] = [233.328125, 154.0, 385.03125, 154.015625, 225.625];
 
     assert!((row.width - 1184.0).abs() < 0.01, "{row:?}");
     assert!(
@@ -3388,8 +3530,7 @@ fn functional_percentage_max_replaced_items_shrink_in_a_flex_row() {
         </div>
         "#,
     );
-    let ids = ["i1", "i2", "i3", "i4", "i5"]
-        .map(|id| tree.get_element_by_id(id).unwrap());
+    let ids = ["i1", "i2", "i3", "i4", "i5"].map(|id| tree.get_element_by_id(id).unwrap());
     let intrinsic = HashMap::from([
         (ids[0], (303.0, 255.0)),
         (ids[1], (200.0, 400.0)),
@@ -3398,16 +3539,23 @@ fn functional_percentage_max_replaced_items_shrink_in_a_flex_row() {
         (ids[4], (293.0, 354.0)),
     ]);
     let layout = layout_dom_with_images(&tree, (1280.0, 1000.0), &intrinsic);
-    let columns = ["c1", "c2", "c3", "c4", "c5"]
-        .map(|id| layout.rects[&tree.get_element_by_id(id).unwrap()]);
+    let columns =
+        ["c1", "c2", "c3", "c4", "c5"].map(|id| layout.rects[&tree.get_element_by_id(id).unwrap()]);
     let images = ids.map(|id| layout.rects[&id]);
-    let expected_widths: [f32; 5] =
-        [233.328125, 154.0, 385.03125, 154.015625, 225.625];
+    let expected_widths: [f32; 5] = [233.328125, 154.0, 385.03125, 154.015625, 225.625];
 
     for (index, expected) in expected_widths.into_iter().enumerate() {
         let expected = expected.round();
-        assert_eq!(columns[index].width, expected, "column {index}: {:?}", columns[index]);
-        assert_eq!(images[index].width, expected, "image {index}: {:?}", images[index]);
+        assert_eq!(
+            columns[index].width, expected,
+            "column {index}: {:?}",
+            columns[index]
+        );
+        assert_eq!(
+            images[index].width, expected,
+            "image {index}: {:?}",
+            images[index]
+        );
     }
 }
 
@@ -3566,22 +3714,17 @@ fn percentage_max_replaced_items_keep_natural_max_content_size() {
     );
     let first = tree.get_element_by_id("i1").unwrap();
     let second = tree.get_element_by_id("i2").unwrap();
-    let intrinsic = HashMap::from([
-        (first, (303.0, 255.0)),
-        (second, (500.0, 250.0)),
-    ]);
+    let intrinsic = HashMap::from([(first, (303.0, 255.0)), (second, (500.0, 250.0))]);
     let layout = layout_dom_with_images(&tree, (2200.0, 1000.0), &intrinsic);
     let first = layout.rects[&first];
     let second = layout.rects[&second];
 
     assert!(
-        (first.width - 303.0).abs() < 0.01
-            && (first.height - 255.0).abs() < 0.01,
+        (first.width - 303.0).abs() < 0.01 && (first.height - 255.0).abs() < 0.01,
         "{first:?}"
     );
     assert!(
-        (second.width - 500.0).abs() < 0.01
-            && (second.height - 250.0).abs() < 0.01,
+        (second.width - 500.0).abs() < 0.01 && (second.height - 250.0).abs() < 0.01,
         "{second:?}"
     );
 }
@@ -3622,8 +3765,14 @@ fn negative_letter_spacing_changes_intrinsic_line_breaks() {
 
     assert_eq!(layout.styles[&tight_id].letter_spacing, Some(-1.8000001));
     assert_eq!(layout.styles[&reset_id].letter_spacing, Some(0.0));
-    assert_eq!(tight.height, 80.0, "negative tracking must shape to two lines: {tight:?}");
-    assert_eq!(reset.height, 120.0, "`normal` must reset inherited tracking: {reset:?}");
+    assert_eq!(
+        tight.height, 80.0,
+        "negative tracking must shape to two lines: {tight:?}"
+    );
+    assert_eq!(
+        reset.height, 120.0,
+        "`normal` must reset inherited tracking: {reset:?}"
+    );
 }
 
 #[test]
@@ -4169,13 +4318,7 @@ fn open_details_lays_out_all_of_its_content() {
     let layout = layout_dom(&tree, (400.0, 200.0));
     let id = |name| tree.get_element_by_id(name).unwrap();
 
-    for visible in [
-        "open-details",
-        "summary",
-        "content",
-        "descendant",
-        "second",
-    ] {
+    for visible in ["open-details", "summary", "content", "descendant", "second"] {
         assert!(
             layout.rects.contains_key(&id(visible)),
             "open details must retain its rendered content: {visible}"
@@ -4246,7 +4389,10 @@ fn display_inherit_transitively_preserves_contents_and_block_display() {
         native_inherit.internal_flex_container,
         "inherited table-cell display must reconstruct its internal cell-content wrapper"
     );
-    assert_eq!(native_inherit.min_width, obscura_render::Dimension::Px(50.0));
+    assert_eq!(
+        native_inherit.min_width,
+        obscura_render::Dimension::Px(50.0)
+    );
     assert!(native_inherit_reversed.internal_flex_container);
     assert_eq!(
         native_inherit_reversed.min_width,
@@ -4432,7 +4578,10 @@ fn grid_replaced_classification_keeps_controls_stretched_and_media_natural() {
     let auto_button_grid = layout.rects[&tree.get_element_by_id("auto-button-grid").unwrap()];
     assert!(auto_button.width > 20.0 && auto_button.width < 30.0);
     assert_eq!(auto_button.height, 300.0);
-    assert_eq!(auto_button.x + auto_button.width, auto_button_grid.x + auto_button_grid.width);
+    assert_eq!(
+        auto_button.x + auto_button.width,
+        auto_button_grid.x + auto_button_grid.width
+    );
 }
 
 #[test]

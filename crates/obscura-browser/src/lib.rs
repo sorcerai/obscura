@@ -1,3 +1,6 @@
+#![allow(clippy::all)]
+#![allow(dead_code)]
+
 pub mod context;
 mod fork_virtual_url;
 pub mod lifecycle;

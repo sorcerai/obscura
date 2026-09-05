@@ -15,15 +15,15 @@ use tokio::sync::RwLock;
 use url::Url;
 
 #[cfg(feature = "stealth")]
-use crate::cookies::CookieJar;
-#[cfg(feature = "stealth")]
 use crate::client::{
-    CallbackRegistry, InFlightGuard, ObscuraNetError, RequestInfo, RequestMode,
-    ResourceRequest, Response, SsrfGuardResolver, cors_required, env_allows_private_network,
-    fetch_file_url, is_forbidden_ip, redirect_taints_origin, request_fetch_site,
-    request_referrer, response_too_large, serialized_request_origin, validate_cors_response,
-    validate_request_mode, validate_url,
+    cors_required, env_allows_private_network, fetch_file_url, is_forbidden_ip,
+    redirect_taints_origin, request_fetch_site, request_referrer, response_too_large,
+    serialized_request_origin, validate_cors_response, validate_request_mode, validate_url,
+    CallbackRegistry, InFlightGuard, ObscuraNetError, RequestInfo, RequestMode, ResourceRequest,
+    Response, SsrfGuardResolver,
 };
+#[cfg(feature = "stealth")]
+use crate::cookies::CookieJar;
 
 /// The wreq half of [`SsrfGuardResolver`]. `validate_url` only inspects the
 /// host *string*, so on its own it lets a public name that resolves inward
@@ -88,9 +88,10 @@ fn wreq_response_header_value<'a>(
             url, name
         )));
     }
-    first.to_str().map(Some).map_err(|_| {
-        ObscuraNetError::Cors(format!("{} returned an invalid {} header", url, name))
-    })
+    first
+        .to_str()
+        .map(Some)
+        .map_err(|_| ObscuraNetError::Cors(format!("{} returned an invalid {} header", url, name)))
 }
 
 #[cfg(feature = "stealth")]
@@ -103,8 +104,7 @@ fn validate_wreq_cors_response(
     if !cors_required(request, target) {
         return Ok(());
     }
-    let allow_origin =
-        wreq_response_header_value(headers, "access-control-allow-origin", target)?;
+    let allow_origin = wreq_response_header_value(headers, "access-control-allow-origin", target)?;
     let allow_credentials =
         wreq_response_header_value(headers, "access-control-allow-credentials", target)?;
     validate_cors_response(
@@ -141,9 +141,8 @@ async fn read_wreq_body_limited(
     futures_util::pin_mut!(stream);
     let mut body = Vec::with_capacity(capacity);
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|error| {
-            ObscuraNetError::Network(format!("Failed to read body: {}", error))
-        })?;
+        let chunk = chunk
+            .map_err(|error| ObscuraNetError::Network(format!("Failed to read body: {}", error)))?;
         if chunk.len() > limit.saturating_sub(body.len()) {
             return Err(response_too_large(url, limit));
         }
@@ -229,7 +228,10 @@ impl StealthHttpClient {
             std::env::var_os("SSL_CERT_FILE").as_deref(),
             std::env::var_os("SSL_CERT_DIR").as_deref(),
         ) {
-            match wreq::tls::trust::CertStore::builder().set_default_paths().build() {
+            match wreq::tls::trust::CertStore::builder()
+                .set_default_paths()
+                .build()
+            {
                 Ok(store) => builder = builder.tls_cert_store(store),
                 Err(error) => tracing::warn!(
                     %error,
@@ -245,7 +247,9 @@ impl StealthHttpClient {
             }
         }
 
-        let client = builder.build().expect("failed to build wreq stealth client");
+        let client = builder
+            .build()
+            .expect("failed to build wreq stealth client");
 
         StealthHttpClient {
             client,
@@ -375,12 +379,7 @@ impl StealthHttpClient {
                 })?;
 
             let status = resp.status();
-            validate_wreq_cors_response(
-                &request,
-                &current_url,
-                &request_origin,
-                resp.headers(),
-            )?;
+            validate_wreq_cors_response(&request, &current_url, &request_origin, resp.headers())?;
 
             if request.sends_credentials_to(&current_url) {
                 for val in resp.headers().get_all("set-cookie") {
@@ -393,7 +392,12 @@ impl StealthHttpClient {
             let response_headers: HashMap<String, String> = resp
                 .headers()
                 .iter()
-                .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_lowercase(),
+                        v.to_str().unwrap_or("").to_string(),
+                    )
+                })
                 .collect();
 
             if status.is_redirection() {
@@ -406,16 +410,15 @@ impl StealthHttpClient {
                     })?;
                     validate_url(&next_url, self.allow_private_network)?;
                     validate_request_mode(&request, &next_url)?;
-                    redirect_tainted |=
-                        redirect_taints_origin(&request, &current_url, &next_url);
+                    redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);
                     redirects.push(current_url.clone());
                     current_url = next_url;
                     continue;
                 }
             }
 
-            let body = read_wreq_body_limited(resp, &current_url, request.max_response_bytes)
-                .await?;
+            let body =
+                read_wreq_body_limited(resp, &current_url, request.max_response_bytes).await?;
             drop(in_flight);
 
             let response = Response {
@@ -481,9 +484,10 @@ impl StealthHttpClient {
         }
 
         let in_flight = InFlightGuard::new(&self.in_flight);
-        let resp = req.send().await.map_err(|e| {
-            ObscuraNetError::Network(format!("{}: {}", url, e))
-        })?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ObscuraNetError::Network(format!("{}: {}", url, e)))?;
 
         let status = resp.status();
         if store_cookies {
@@ -496,7 +500,12 @@ impl StealthHttpClient {
         let response_headers: HashMap<String, String> = resp
             .headers()
             .iter()
-            .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+            .map(|(k, v)| {
+                (
+                    k.as_str().to_lowercase(),
+                    v.to_str().unwrap_or("").to_string(),
+                )
+            })
             .collect();
         let resp_body = read_wreq_body_limited(resp, url, 64 * 1024 * 1024).await?;
         drop(in_flight);
@@ -532,7 +541,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use url::Url;
 
-    use super::{StealthHttpClient, send_get_with_connection_reset_retry};
+    use super::{send_get_with_connection_reset_retry, StealthHttpClient};
     use crate::client::{ObscuraNetError, SsrfGuardResolver};
     use crate::cookies::CookieJar;
     use wreq::dns::{Name, Resolve};
@@ -565,13 +574,11 @@ mod tests {
     // gzip (level 9) of PLAIN_BODY, hardcoded so the fixture needs no
     // compression dependency. A wrong byte fails the assert below.
     const GZIP_BODY: &[u8] = &[
-        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xb3, 0x51,
-        0x74, 0xf1, 0x77, 0x0e, 0x89, 0x0c, 0x70, 0x55, 0xc8, 0x28, 0xc9, 0xcd,
-        0xb1, 0xb3, 0x81, 0x90, 0x49, 0xf9, 0x29, 0x95, 0x76, 0x36, 0x05, 0x0a,
-        0x99, 0x29, 0xb6, 0x4a, 0xb9, 0x89, 0x45, 0xd9, 0x4a, 0x76, 0xe9, 0x55,
-        0x99, 0x05, 0x0a, 0xf9, 0xd9, 0x36, 0xfa, 0x05, 0x76, 0x36, 0xfa, 0x10,
-        0x69, 0x7d, 0xb0, 0x5a, 0x00, 0x80, 0x3d, 0x1c, 0x5f, 0x41, 0x00, 0x00,
-        0x00,
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x03, 0xb3, 0x51, 0x74, 0xf1, 0x77,
+        0x0e, 0x89, 0x0c, 0x70, 0x55, 0xc8, 0x28, 0xc9, 0xcd, 0xb1, 0xb3, 0x81, 0x90, 0x49, 0xf9,
+        0x29, 0x95, 0x76, 0x36, 0x05, 0x0a, 0x99, 0x29, 0xb6, 0x4a, 0xb9, 0x89, 0x45, 0xd9, 0x4a,
+        0x76, 0xe9, 0x55, 0x99, 0x05, 0x0a, 0xf9, 0xd9, 0x36, 0xfa, 0x05, 0x76, 0x36, 0xfa, 0x10,
+        0x69, 0x7d, 0xb0, 0x5a, 0x00, 0x80, 0x3d, 0x1c, 0x5f, 0x41, 0x00, 0x00, 0x00,
     ];
 
     fn reset_fixture(respond_after_reset: bool) -> (u16, std::thread::JoinHandle<usize>) {

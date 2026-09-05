@@ -54,7 +54,11 @@ async fn cdp(ctx: &mut CdpContext, id: u64, method: &str, params: Value, sid: &s
         ctx,
     )
     .await;
-    assert!(response.error.is_none(), "CDP {method} failed: {:?}", response.error);
+    assert!(
+        response.error.is_none(),
+        "CDP {method} failed: {:?}",
+        response.error
+    );
     response.result.unwrap_or_else(|| json!({}))
 }
 
@@ -76,7 +80,14 @@ async fn setup() -> (CdpContext, String) {
     let page_id = ctx.create_page();
     let sid = "label-activation-session";
     ctx.sessions.insert(sid.to_string(), page_id);
-    cdp(&mut ctx, 1, "Page.navigate", json!({"url": url, "waitUntil": "load"}), sid).await;
+    cdp(
+        &mut ctx,
+        1,
+        "Page.navigate",
+        json!({"url": url, "waitUntil": "load"}),
+        sid,
+    )
+    .await;
     (ctx, sid.to_string())
 }
 
@@ -144,7 +155,10 @@ async fn mouse_click_deep_inside_a_label_activates_its_control() {
     let (mut ctx, sid) = setup().await;
     click_element(&mut ctx, 10, &sid, "#deep-text").await;
     let state = state(&mut ctx, 20, &sid).await;
-    assert_eq!(state["c"], true, "click on a nested element resolves its label: {state}");
+    assert_eq!(
+        state["c"], true,
+        "click on a nested element resolves its label: {state}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -153,6 +167,12 @@ async fn mouse_click_on_a_label_for_a_disabled_control_does_nothing() {
     click_element(&mut ctx, 10, &sid, "#off").await;
     click_element(&mut ctx, 20, &sid, "#boxd").await;
     let state = state(&mut ctx, 30, &sid).await;
-    assert_eq!(state["d"], false, "disabled control must not toggle: {state}");
-    assert_eq!(state["events"], "", "disabled control must dispatch nothing: {state}");
+    assert_eq!(
+        state["d"], false,
+        "disabled control must not toggle: {state}"
+    );
+    assert_eq!(
+        state["events"], "",
+        "disabled control must dispatch nothing: {state}"
+    );
 }

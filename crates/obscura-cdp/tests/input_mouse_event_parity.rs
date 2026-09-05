@@ -54,7 +54,11 @@ async fn cdp(
         ctx,
     )
     .await;
-    assert!(response.error.is_none(), "CDP {method} failed: {:?}", response.error);
+    assert!(
+        response.error.is_none(),
+        "CDP {method} failed: {:?}",
+        response.error
+    );
     response.result.unwrap_or_else(|| json!({}))
 }
 
@@ -136,8 +140,14 @@ async fn wheel_over_nested_overflow_scrolls_the_nested_container() {
     let state = scroll_state(&mut ctx, 3, &sid).await;
     assert_eq!(state["boxX"], 70.0);
     assert_eq!(state["boxY"], 110.0);
-    assert_eq!(state["rootX"], 0.0, "nested wheel must not leak to the viewport");
-    assert_eq!(state["rootY"], 0.0, "nested wheel must not leak to the viewport");
+    assert_eq!(
+        state["rootX"], 0.0,
+        "nested wheel must not leak to the viewport"
+    );
+    assert_eq!(
+        state["rootY"], 0.0,
+        "nested wheel must not leak to the viewport"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -170,7 +180,10 @@ async fn wheel_chains_to_root_when_nested_scroller_is_saturated() {
     wheel(&mut ctx, 4, &sid, 50.0, 50.0, 0.0, 90.0).await;
     let state = scroll_state(&mut ctx, 5, &sid).await;
     assert_eq!(state["boxY"], state["maxBoxY"], "inner remains clamped");
-    assert_eq!(state["rootY"], 90.0, "remaining wheel gesture chains to the viewport");
+    assert_eq!(
+        state["rootY"], 90.0,
+        "remaining wheel gesture chains to the viewport"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -242,7 +255,10 @@ async fn hit_testing_clips_scrolled_children_at_overflow_padding_edge() {
     assert!(result["innerLeft"].as_f64().unwrap() <= 25.0);
     assert!(result["innerRight"].as_f64().unwrap() >= 25.0);
     assert_eq!(result["boxLeft"], 20.0);
-    assert_eq!(result["hit"], "box", "content hidden behind the border cannot win hit testing");
+    assert_eq!(
+        result["hit"], "box",
+        "content hidden behind the border cannot win hit testing"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -284,10 +300,18 @@ async fn press_release_orders_events_and_defers_click_activation() {
         &sid,
     )
     .await;
-    let pressed: Value = serde_json::from_str(pressed["result"]["value"].as_str().unwrap()).unwrap();
-    assert_eq!(pressed["checked"], false, "checkbox activation must wait for release");
+    let pressed: Value =
+        serde_json::from_str(pressed["result"]["value"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        pressed["checked"], false,
+        "checkbox activation must wait for release"
+    );
     assert_eq!(pressed["log"][0]["type"], "mousedown");
-    assert_eq!(pressed["log"].as_array().unwrap().len(), 1, "press must not synthesize click");
+    assert_eq!(
+        pressed["log"].as_array().unwrap().len(),
+        1,
+        "press must not synthesize click"
+    );
 
     cdp(
         &mut ctx,
@@ -307,7 +331,8 @@ async fn press_release_orders_events_and_defers_click_activation() {
         &sid,
     )
     .await;
-    let released: Value = serde_json::from_str(released["result"]["value"].as_str().unwrap()).unwrap();
+    let released: Value =
+        serde_json::from_str(released["result"]["value"].as_str().unwrap()).unwrap();
     let types: Vec<&str> = released["log"]
         .as_array()
         .unwrap()
@@ -316,7 +341,10 @@ async fn press_release_orders_events_and_defers_click_activation() {
         .collect();
     assert_eq!(types, ["mousedown", "mouseup", "click", "input", "change"]);
     assert_eq!(released["checked"], true);
-    assert_eq!(released["log"][2]["checked"], true, "click sees checkbox pre-activation");
+    assert_eq!(
+        released["log"][2]["checked"], true,
+        "click sees checkbox pre-activation"
+    );
     assert_eq!(released["log"][2]["x"], 31.0);
     assert_eq!(released["log"][2]["ctrl"], true);
     assert_eq!(released["log"][2]["shift"], true);
@@ -371,7 +399,13 @@ async fn radio_release_selects_only_the_target_in_its_group() {
     assert_eq!(result["b"], true);
     assert_eq!(
         result["events"],
-        json!(["radio-b:mousedown", "radio-b:mouseup", "radio-b:click", "radio-b:input", "radio-b:change"]),
+        json!([
+            "radio-b:mousedown",
+            "radio-b:mouseup",
+            "radio-b:click",
+            "radio-b:input",
+            "radio-b:change"
+        ]),
         "the newly selected radio alone receives activation events"
     );
 }

@@ -25,15 +25,29 @@ async fn cdp(
         ctx,
     )
     .await;
-    assert!(resp.error.is_none(), "CDP {method} failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "CDP {method} failed: {:?}",
+        resp.error
+    );
     resp.result.unwrap_or_else(|| json!({}))
 }
 
 /// Opens a page the way Puppeteer and Playwright do, rather than inserting a
 /// session for a hand-made page, and returns `(targetId, sessionId)`.
 async fn created_and_attached(ctx: &mut CdpContext) -> (String, String) {
-    let created = cdp(ctx, 900, "Target.createTarget", json!({"url": "about:blank"}), None).await;
-    let target_id = created["targetId"].as_str().expect("no targetId").to_string();
+    let created = cdp(
+        ctx,
+        900,
+        "Target.createTarget",
+        json!({"url": "about:blank"}),
+        None,
+    )
+    .await;
+    let target_id = created["targetId"]
+        .as_str()
+        .expect("no targetId")
+        .to_string();
     let session = attach_to(ctx, &target_id, 901).await;
     (target_id, session)
 }
@@ -98,7 +112,10 @@ async fn every_session_that_added_the_binding_is_called() {
     got.sort_unstable();
     let mut want = vec![first.as_str(), second.as_str()];
     want.sort_unstable();
-    assert_eq!(got, want, "both subscribers should have been called: {called:?}");
+    assert_eq!(
+        got, want,
+        "both subscribers should have been called: {called:?}"
+    );
     for (_, params) in &called {
         assert_eq!(params["name"], "obscuraProbe");
         assert_eq!(params["payload"], "HELLO");

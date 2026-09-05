@@ -159,7 +159,10 @@ impl McpClient {
     }
 
     fn tool(&mut self, name: &str, args: serde_json::Value) -> serde_json::Value {
-        self.call("tools/call", serde_json::json!({ "name": name, "arguments": args }))
+        self.call(
+            "tools/call",
+            serde_json::json!({ "name": name, "arguments": args }),
+        )
     }
 
     fn write_msg(&mut self, msg: &serde_json::Value) {
@@ -186,9 +189,7 @@ impl Drop for McpClient {
 
 // helper: extract first content text from a tools/call response
 fn content_text(resp: &serde_json::Value) -> &str {
-    resp["result"]["content"][0]["text"]
-        .as_str()
-        .unwrap_or("")
+    resp["result"]["content"][0]["text"].as_str().unwrap_or("")
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -226,7 +227,10 @@ fn snapshot_preserves_whitespace_between_inline_spans() {
         text.contains("Hello world.\n\nHello, world!"),
         "snapshot mangled inline text: {text}"
     );
-    assert!(!text.contains("H e l l o"), "snapshot inserted spaces: {text}");
+    assert!(
+        !text.contains("H e l l o"),
+        "snapshot inserted spaces: {text}"
+    );
 }
 
 #[test]
@@ -308,9 +312,15 @@ fn test_navigate_and_snapshot() {
     assert!(text.contains("127.0.0.1"), "unexpected nav text: {text}");
 
     let snap = c.tool("browser_snapshot", serde_json::json!({}));
-    assert!(snap["result"]["isError"].is_null(), "snapshot failed: {snap}");
+    assert!(
+        snap["result"]["isError"].is_null(),
+        "snapshot failed: {snap}"
+    );
     let text = content_text(&snap);
-    assert!(text.contains("Example Domain"), "unexpected snapshot: {text}");
+    assert!(
+        text.contains("Example Domain"),
+        "unexpected snapshot: {text}"
+    );
     assert!(text.contains("URL:"), "snapshot missing URL line");
 }
 
@@ -387,7 +397,10 @@ fn test_wait_for_selector() {
         "browser_wait_for",
         serde_json::json!({"selector": "h1", "timeout": 5}),
     );
-    assert!(resp["result"]["isError"].is_null(), "wait_for failed: {resp}");
+    assert!(
+        resp["result"]["isError"].is_null(),
+        "wait_for failed: {resp}"
+    );
     assert!(content_text(&resp).contains("Found"));
 }
 

@@ -36,7 +36,9 @@ pub(crate) fn execution_context_created_event(
 /// the page context. Both handlers now share this guard.
 fn is_valid_binding_name(name: &str) -> bool {
     !name.is_empty()
-        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        && name
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '$')
         && !name.chars().next().unwrap_or('0').is_ascii_digit()
 }
 
@@ -49,10 +51,11 @@ async fn emit_post_eval_nav(
     ctx: &mut CdpContext,
     session_id: &Option<String>,
 ) -> Result<(), String> {
-    let page = ctx
-        .get_session_page_mut(session_id)
-        .ok_or("No page")?;
-    let did_navigate = page.process_pending_navigation().await.map_err(|e| e.to_string())?;
+    let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
+    let did_navigate = page
+        .process_pending_navigation()
+        .await
+        .map_err(|e| e.to_string())?;
     if !did_navigate {
         return Ok(());
     }
@@ -95,19 +98,20 @@ pub async fn handle(
             // a context appears. Returning "No page" here breaks the standard
             // puppeteer connect/newPage flow. If there's no session, succeed
             // silently — the next Target.attachToTarget will set things up.
-            if let Some(page_id) = session_id.as_ref()
-                .and_then(|session| ctx.sessions.get(session)).cloned()
+            if let Some(page_id) = session_id
+                .as_ref()
+                .and_then(|session| ctx.sessions.get(session))
+                .cloned()
             {
-                let newly_enabled = session_id.as_ref().is_some_and(|session| {
-                    ctx.runtime_enabled_sessions.insert(session.clone())
-                });
+                let newly_enabled = session_id
+                    .as_ref()
+                    .is_some_and(|session| ctx.runtime_enabled_sessions.insert(session.clone()));
                 ctx.refresh_runtime_event_collection(&page_id);
                 ctx.ensure_default_context(&page_id);
                 if newly_enabled {
-                    let events = ctx.contexts_for_page(&page_id)
-                        .map(|context| execution_context_created_event(
-                            context, session_id.clone(),
-                        ))
+                    let events = ctx
+                        .contexts_for_page(&page_id)
+                        .map(|context| execution_context_created_event(context, session_id.clone()))
                         .collect::<Vec<_>>();
                     ctx.pending_events.extend(events);
                 }
@@ -150,9 +154,7 @@ pub async fn handle(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(30_000);
 
-            let page = ctx
-                .get_session_page_mut(session_id)
-                .ok_or("No page")?;
+            let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
             let info = match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
                 page.evaluate_for_cdp_with_timeout(
@@ -167,9 +169,7 @@ pub async fn handle(
                 Ok(Ok(info)) => info,
                 Ok(Err(error)) => return Err(error),
                 Err(_) => {
-                    return Err(format!(
-                        "Runtime.evaluate exceeded {timeout_ms}ms timeout"
-                    ));
+                    return Err(format!("Runtime.evaluate exceeded {timeout_ms}ms timeout"));
                 }
             };
             emit_post_eval_nav(ctx, session_id).await?;
@@ -201,7 +201,13 @@ pub async fn handle(
             // callFunctionOn (not `contextId`); a request may omit it when
             // `objectId` is supplied — in that case context validation is a
             // no-op and the default context is used.
-            validate_context(params, "executionContextId", ctx, session_id, "callFunctionOn")?;
+            validate_context(
+                params,
+                "executionContextId",
+                ctx,
+                session_id,
+                "callFunctionOn",
+            )?;
 
             // Keep awaitPromise alive for the same command budget as evaluate.
             // Playwright implements waits with callFunctionOn on some utility
@@ -212,9 +218,7 @@ pub async fn handle(
                 .and_then(|v| v.as_u64())
                 .unwrap_or(30_000);
 
-            let page = ctx
-                .get_session_page_mut(session_id)
-                .ok_or("No page")?;
+            let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
             let info = match tokio::time::timeout(
                 std::time::Duration::from_millis(timeout_ms),
                 page.call_function_on_for_cdp_with_timeout(
@@ -261,9 +265,7 @@ pub async fn handle(
             //      ElementHandle.
             let object_id = params.get("objectId").and_then(|v| v.as_str());
             if let Some(oid) = object_id {
-                let page = ctx
-                    .get_session_page_mut(session_id)
-                    .ok_or("No page")?;
+                let page = ctx.get_session_page_mut(session_id).ok_or("No page")?;
                 // The child ids minted below are `<parent>::<key>` and the key
                 // is a property name off a page object, so the page decides
                 // what ends up inside this literal. A JSON literal covers the
@@ -307,8 +309,10 @@ pub async fn handle(
                         .iter()
                         .map(|p| {
                             let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                            let prop_type =
-                                p.get("type").and_then(|v| v.as_str()).unwrap_or("undefined");
+                            let prop_type = p
+                                .get("type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("undefined");
                             let mut remote = json!({ "type": prop_type });
                             if let Some(child_oid) = p.get("childOid").and_then(|v| v.as_str()) {
                                 remote["type"] = json!("object");
@@ -463,7 +467,9 @@ fn validate_context(
     method: &str,
 ) -> Result<(), String> {
     let id = params.get(field).and_then(|value| value.as_i64());
-    let unique_id = params.get("uniqueContextId").and_then(|value| value.as_str());
+    let unique_id = params
+        .get("uniqueContextId")
+        .and_then(|value| value.as_str());
     if id.is_some() && unique_id.is_some() {
         return Err(format!(
             "Runtime.{method} cannot specify both {field} and uniqueContextId"
@@ -472,24 +478,29 @@ fn validate_context(
     if id.is_none() && unique_id.is_none() {
         return Ok(());
     }
-    let record = id.and_then(|id| ctx.context_by_id(id))
+    let record = id
+        .and_then(|id| ctx.context_by_id(id))
         .or_else(|| unique_id.and_then(|id| ctx.context_by_unique_id(id)));
     if let Some(record) = record {
-        let owner = session_id.as_ref().and_then(|session| ctx.sessions.get(session));
+        let owner = session_id
+            .as_ref()
+            .and_then(|session| ctx.sessions.get(session));
         if owner == Some(&record.page_id) {
             // This registry currently validates ownership/routing only. A
             // named isolated context still executes in the owning page's
             // current V8 runtime/global; it is not a separate V8 realm yet.
             return Ok(());
         }
-    } else if session_id.is_none() && unique_id.is_none()
+    } else if session_id.is_none()
+        && unique_id.is_none()
         && id.is_some_and(|id| ctx.valid_context_ids.contains(&id))
     {
         // Direct embedders can still reserve an id through the existing public
         // next_isolated_context API. Attached sessions require page ownership.
         return Ok(());
     }
-    let identity = id.map(|id| id.to_string())
+    let identity = id
+        .map(|id| id.to_string())
         .or_else(|| unique_id.map(str::to_string))
         .unwrap_or_default();
     if record.is_none() || session_id.is_some() {
@@ -690,7 +701,10 @@ mod tests {
             .get("exceptionDetails")
             .expect("a rejected call is reported through exceptionDetails");
         assert_eq!(details["exception"]["subtype"], json!("error"));
-        assert!(reply["result"]["value"].is_null(), "the error must not be serialized by value: {reply}");
+        assert!(
+            reply["result"]["value"].is_null(),
+            "the error must not be serialized by value: {reply}"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

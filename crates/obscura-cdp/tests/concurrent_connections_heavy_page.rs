@@ -68,11 +68,7 @@ async fn serve_heavy_fixture(listener: TcpListener, served: Arc<AtomicUsize>) {
             }
             served.fetch_add(1, Ordering::Relaxed);
             let req = String::from_utf8_lossy(&buf[..n]);
-            let path = req
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/")
-                .to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
 
             // Slow subresources: respond after a delay so `active_requests` stays
             // > 0 through several 10ms settle ticks, which is what forces the

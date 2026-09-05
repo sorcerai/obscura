@@ -232,10 +232,10 @@ impl SpecifierMap {
             return Ok(None);
         }
 
-        for key in self
+        if let Some(key) = self
             .prefixes
             .iter()
-            .filter(|key| normalized.starts_with(key.as_str()))
+            .find(|key| normalized.starts_with(key.as_str()))
         {
             let address = self
                 .entries

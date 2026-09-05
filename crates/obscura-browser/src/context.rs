@@ -30,6 +30,7 @@ pub struct BrowserContext {
     /// models: file:// is a local file-system read, while private-network is
     /// the broader SSRF gate from issue #4.
     pub allow_private_network: bool,
+    pub pending_origins: std::sync::Mutex<Vec<obscura_net::StorageStateOrigin>>,
 }
 
 impl BrowserContext {
@@ -40,10 +41,7 @@ impl BrowserContext {
     /// Create a BrowserContext with an optional storage directory.
     /// When `storage_dir` is set, cookies are automatically loaded from
     /// `{storage_dir}/cookies.json` on creation.
-    pub fn with_storage(
-        id: String,
-        storage_dir: Option<PathBuf>,
-    ) -> Self {
+    pub fn with_storage(id: String, storage_dir: Option<PathBuf>) -> Self {
         Self::_new_inner(id, None, false, None, storage_dir, false)
     }
 
@@ -69,7 +67,14 @@ impl BrowserContext {
         storage_dir: Option<PathBuf>,
         allow_private_network: bool,
     ) -> Self {
-        Self::_new_inner(id, proxy_url, stealth, user_agent, storage_dir, allow_private_network)
+        Self::_new_inner(
+            id,
+            proxy_url,
+            stealth,
+            user_agent,
+            storage_dir,
+            allow_private_network,
+        )
     }
 
     fn _new_inner(
@@ -81,23 +86,6 @@ impl BrowserContext {
         allow_private_network: bool,
     ) -> Self {
         let cookie_jar = Arc::new(CookieJar::new());
-
-        // Restore cookies from disk if storage_dir is configured
-        if let Some(ref dir) = storage_dir {
-            let cookie_path = dir.join("cookies.json");
-            if cookie_path.exists() {
-                match cookie_jar.load_from_file(&cookie_path) {
-                    Ok(n) if n > 0 => {
-                        tracing::info!("Loaded {} cookies from {}", n, cookie_path.display());
-                    }
-                    Ok(_) => {}
-                    Err(e) => {
-                        tracing::warn!("Failed to load cookies from {}: {}", cookie_path.display(), e);
-                    }
-                }
-            }
-        }
-
         let mut client = ObscuraHttpClient::with_full_options(
             cookie_jar.clone(),
             proxy_url.as_deref(),
@@ -118,7 +106,7 @@ impl BrowserContext {
             *guard = resolved_ua.clone();
         }
         let http_client = Arc::new(client);
-        BrowserContext {
+        let ctx = BrowserContext {
             id,
             cookie_jar,
             http_client,
@@ -133,7 +121,68 @@ impl BrowserContext {
             allow_file_access: false,
             storage_dir,
             allow_private_network,
+            pending_origins: std::sync::Mutex::new(Vec::new()),
+        };
+
+        // Restore storage state / cookies from disk if storage_dir is configured
+        if let Some(ref dir) = ctx.storage_dir {
+            let state_path = dir.join("storage_state.json");
+            if state_path.exists() {
+                match ctx.load_storage_state_file(&state_path) {
+                    Ok(n) => {
+                        tracing::info!(
+                            "Loaded storage state ({} cookies) from {}",
+                            n,
+                            state_path.display()
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "Failed to load storage state from {}: {}",
+                            state_path.display(),
+                            e
+                        );
+                    }
+                }
+            } else {
+                let cookie_path = dir.join("cookies.json");
+                if cookie_path.exists() {
+                    match ctx.cookie_jar.load_from_file(&cookie_path) {
+                        Ok(n) if n > 0 => {
+                            tracing::info!("Loaded {} cookies from {}", n, cookie_path.display());
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                "Failed to load cookies from {}: {}",
+                                cookie_path.display(),
+                                e
+                            );
+                        }
+                    }
+                }
+            }
         }
+
+        ctx
+    }
+
+    /// Load a Playwright / Reach storage state JSON file into this context.
+    /// Imports cookies into the context's cookie jar and stashes origins in `pending_origins`.
+    /// Returns the number of cookies imported.
+    pub fn load_storage_state_file(&self, path: &std::path::Path) -> anyhow::Result<usize> {
+        if !path.exists() {
+            return Ok(0);
+        }
+        let data = std::fs::read_to_string(path)?;
+        let val: serde_json::Value = serde_json::from_str(&data)?;
+        let (cookie_count, origins) = self.cookie_jar.import_storage_state(&val)?;
+        if !origins.is_empty() {
+            if let Ok(mut pending) = self.pending_origins.lock() {
+                pending.extend(origins);
+            }
+        }
+        Ok(cookie_count)
     }
 
     pub fn with_options(id: String, proxy_url: Option<String>, stealth: bool) -> Self {
@@ -190,10 +239,53 @@ impl BrowserContext {
             allow_file_access: self.allow_file_access,
             storage_dir: persistent.then(|| self.storage_dir.clone()).flatten(),
             allow_private_network: self.allow_private_network,
+            pending_origins: std::sync::Mutex::new(if persistent {
+                self.pending_origins
+                    .lock()
+                    .map(|g| g.clone())
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            }),
         }
     }
 
-    /// Persist cookies to disk if storage_dir is configured.
+    /// Export all cookies and pending origins in Playwright storage state format.
+    pub fn export_storage_state(&self) -> serde_json::Value {
+        let cookies = self.cookie_jar.export_storage_state_cookies();
+        let origins: Vec<serde_json::Value> = self
+            .pending_origins
+            .lock()
+            .map(|pending| {
+                pending
+                    .iter()
+                    .filter_map(|po| serde_json::to_value(po).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        serde_json::json!({
+            "cookies": cookies,
+            "origins": origins,
+        })
+    }
+
+    /// Save storage state to a JSON file atomically via tempfile then rename.
+    pub fn save_storage_state_file(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let state = self.export_storage_state();
+        let json = serde_json::to_string_pretty(&state)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+        tmp.write_all(json.as_bytes())?;
+        tmp.persist(path).map_err(|e| e.error)?;
+        Ok(())
+    }
+
+    /// Persist cookies and storage state to disk if storage_dir is configured.
     /// Called during graceful shutdown.
     pub fn save_cookies(&self) {
         if let Some(ref dir) = self.storage_dir {
@@ -203,6 +295,17 @@ impl BrowserContext {
                 tracing::warn!("Failed to save cookies to {}: {}", cookie_path.display(), e);
             } else {
                 tracing::info!("Saved cookies to {}", cookie_path.display());
+            }
+
+            let state_path = dir.join("storage_state.json");
+            if let Err(e) = self.save_storage_state_file(&state_path) {
+                tracing::warn!(
+                    "Failed to save storage state to {}: {}",
+                    state_path.display(),
+                    e
+                );
+            } else {
+                tracing::info!("Saved storage state to {}", state_path.display());
             }
         }
     }
@@ -227,12 +330,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn with_full_options_falls_back_to_chrome_default() {
-        let ctx = BrowserContext::with_full_options(
-            "test".to_string(),
-            None,
-            false,
-            None,
-        );
+        let ctx = BrowserContext::with_full_options("test".to_string(), None, false, None);
         assert!(ctx.user_agent.contains("Chrome"));
         let client_ua = ctx.http_client.user_agent.read().await.clone();
         assert!(client_ua.contains("Chrome"));
@@ -253,7 +351,10 @@ mod tests {
             false,
             Some("Template-UA/1.0".to_string()),
         );
-        source.cookie_jar.set_cookie("sid=source", &url::Url::parse("https://example.com").unwrap());
+        source.cookie_jar.set_cookie(
+            "sid=source",
+            &url::Url::parse("https://example.com").unwrap(),
+        );
 
         let persistent = source.isolated_copy("persistent".to_string(), true);
         let incognito = source.isolated_copy("incognito".to_string(), false);
@@ -261,9 +362,91 @@ mod tests {
         assert_eq!(persistent.cookie_jar.get_all_cookies().len(), 1);
         assert!(incognito.cookie_jar.get_all_cookies().is_empty());
         persistent.cookie_jar.clear();
-        persistent.http_client.set_user_agent("Changed-UA/2.0").await;
+        persistent
+            .http_client
+            .set_user_agent("Changed-UA/2.0")
+            .await;
 
         assert_eq!(source.cookie_jar.get_all_cookies().len(), 1);
-        assert_eq!(source.http_client.user_agent.read().await.as_str(), "Template-UA/1.0");
+        assert_eq!(
+            source.http_client.user_agent.read().await.as_str(),
+            "Template-UA/1.0"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_load_storage_state_file_and_inject_on_navigation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_path = tmp.path().join("storage_state.json");
+        let state_json = serde_json::json!({
+            "cookies": [
+                {
+                    "name": "auth_token",
+                    "value": "xyz123",
+                    "domain": "example.com",
+                    "path": "/",
+                    "httpOnly": true,
+                    "sameSite": "Strict"
+                }
+            ],
+            "origins": [
+                {
+                    "origin": "https://example.com",
+                    "localStorage": [
+                        { "name": "theme", "value": "dark" }
+                    ]
+                }
+            ]
+        });
+        std::fs::write(&state_path, serde_json::to_string(&state_json).unwrap()).unwrap();
+
+        let ctx = Arc::new(BrowserContext::with_storage(
+            "test".into(),
+            Some(tmp.path().to_path_buf()),
+        ));
+        // storage_state.json was loaded automatically on context creation
+        assert_eq!(ctx.cookie_jar.get_all_cookies().len(), 1);
+        assert_eq!(ctx.pending_origins.lock().unwrap().len(), 1);
+
+        let mut page = crate::page::Page::new("tab".into(), ctx.clone());
+        page.navigate("data:text/html,<html><body>test</body></html>")
+            .await
+            .unwrap();
+        // Set page url to matching origin
+        page.url = Some(url::Url::parse("https://example.com/home").unwrap());
+        page.inject_pending_storage();
+
+        // Pending origin should be drained
+        assert_eq!(ctx.pending_origins.lock().unwrap().len(), 0);
+
+        // localStorage should now have the injected key
+        let val = page.evaluate("localStorage.getItem('theme')");
+        assert_eq!(val, serde_json::json!("dark"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_page_navigate_drains_and_injects_matching_origin() {
+        let ctx = Arc::new(BrowserContext::new("test".into()));
+        ctx.pending_origins
+            .lock()
+            .unwrap()
+            .push(obscura_net::StorageStateOrigin {
+                origin: "http://127.0.0.1:9000".into(),
+                local_storage: vec![obscura_net::StorageItem::Named {
+                    name: "session".into(),
+                    value: "sess_123".into(),
+                }],
+                session_storage: vec![],
+            });
+
+        let mut page = crate::page::Page::new("tab".into(), ctx.clone());
+        page.navigate("about:blank").await.unwrap();
+        assert_eq!(ctx.pending_origins.lock().unwrap().len(), 1);
+
+        page.url = Some(url::Url::parse("http://127.0.0.1:9000/").unwrap());
+        page.inject_pending_storage();
+        assert_eq!(ctx.pending_origins.lock().unwrap().len(), 0);
+        let val = page.evaluate("localStorage.getItem('session')");
+        assert_eq!(val, serde_json::json!("sess_123"));
     }
 }

@@ -91,23 +91,22 @@ async fn read_request(
 
     // Only consume a body for a POST that can reach the MCP route. Invalid
     // paths and forbidden origins retain the existing early-response behavior.
-    let body = if method == "POST"
-        && path == "/mcp"
-        && origin_allowed(origin.as_deref(), allowed_origins)
-    {
-        match content_length {
-            None => RequestBody::MissingLength,
-            // Reject the client-supplied size before allocating the body.
-            Some(len) if len > MAX_BODY_BYTES => RequestBody::TooLarge,
-            Some(len) => {
-                let mut body = vec![0u8; len];
-                reader.read_exact(&mut body).await?;
-                RequestBody::Read(body)
+    let body =
+        if method == "POST" && path == "/mcp" && origin_allowed(origin.as_deref(), allowed_origins)
+        {
+            match content_length {
+                None => RequestBody::MissingLength,
+                // Reject the client-supplied size before allocating the body.
+                Some(len) if len > MAX_BODY_BYTES => RequestBody::TooLarge,
+                Some(len) => {
+                    let mut body = vec![0u8; len];
+                    reader.read_exact(&mut body).await?;
+                    RequestBody::Read(body)
+                }
             }
-        }
-    } else {
-        RequestBody::NotRead
-    };
+        } else {
+            RequestBody::NotRead
+        };
 
     Ok(RequestRead::Request(HttpRequest {
         method,
@@ -178,7 +177,13 @@ fn cors_header(origin: Option<&str>, allowlist: Option<&str>) -> String {
 /// Connections are handled sequentially on the current thread — the browser
 /// session (including the V8 runtime) is single-threaded and `!Send`, so we
 /// never need to move state across threads.
-pub async fn run(host: String, port: u16, proxy: Option<String>, user_agent: Option<String>, stealth: bool) -> Result<()> {
+pub async fn run(
+    host: String,
+    port: u16,
+    proxy: Option<String>,
+    user_agent: Option<String>,
+    stealth: bool,
+) -> Result<()> {
     let addr: std::net::SocketAddr = format!("{}:{}", host, port).parse()?;
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!("MCP HTTP server on http://{}:{}/mcp", host, port);
@@ -204,16 +209,13 @@ async fn handle_connection(
     let mut reader = BufReader::new(reader);
 
     loop {
-        let request = match read_request_with_timeout(
-            &mut reader,
-            allowed_origins,
-            REQUEST_READ_TIMEOUT,
-        )
-        .await?
-        {
-            RequestRead::Closed | RequestRead::Invalid => break,
-            RequestRead::Request(request) => request,
-        };
+        let request =
+            match read_request_with_timeout(&mut reader, allowed_origins, REQUEST_READ_TIMEOUT)
+                .await?
+            {
+                RequestRead::Closed | RequestRead::Invalid => break,
+                RequestRead::Request(request) => request,
+            };
         let HttpRequest {
             method,
             path,
@@ -290,7 +292,8 @@ async fn handle_connection(
             "POST" => {
                 let body = match body {
                     RequestBody::MissingLength => {
-                        respond(&mut writer, 400, b"{\"error\":\"missing Content-Length\"}").await?;
+                        respond(&mut writer, 400, b"{\"error\":\"missing Content-Length\"}")
+                            .await?;
                         break;
                     }
                     RequestBody::TooLarge => {
@@ -323,7 +326,9 @@ async fn handle_connection(
 async fn process_body(body: &[u8], state: &mut BrowserState) -> Value {
     let msg: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
-        Err(_) => return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}}),
+        Err(_) => {
+            return json!({"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"Parse error"}})
+        }
     };
 
     if let Some(batch) = msg.as_array() {
@@ -336,8 +341,9 @@ async fn process_body(body: &[u8], state: &mut BrowserState) -> Value {
         return Value::Array(results);
     }
 
-    process_one(&msg, state).await
-        .unwrap_or_else(|| json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}))
+    process_one(&msg, state).await.unwrap_or_else(
+        || json!({"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Invalid Request"}}),
+    )
 }
 
 async fn process_one(msg: &Value, state: &mut BrowserState) -> Option<Value> {
@@ -348,7 +354,11 @@ async fn process_one(msg: &Value, state: &mut BrowserState) -> Option<Value> {
     Some(serde_json::to_value(resp).unwrap())
 }
 
-async fn respond_json(writer: &mut (impl AsyncWriteExt + Unpin), body: &[u8], cors: &str) -> Result<()> {
+async fn respond_json(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    body: &[u8],
+    cors: &str,
+) -> Result<()> {
     let hdr = format!(
         "HTTP/1.1 200 OK\r\n\
          Content-Type: application/json\r\n\
@@ -364,7 +374,11 @@ async fn respond_json(writer: &mut (impl AsyncWriteExt + Unpin), body: &[u8], co
     Ok(())
 }
 
-async fn respond(writer: &mut (impl AsyncWriteExt + Unpin), status: u16, body: &[u8]) -> Result<()> {
+async fn respond(
+    writer: &mut (impl AsyncWriteExt + Unpin),
+    status: u16,
+    body: &[u8],
+) -> Result<()> {
     let status_text = match status {
         400 => "Bad Request",
         403 => "Forbidden",
@@ -388,10 +402,7 @@ async fn respond(writer: &mut (impl AsyncWriteExt + Unpin), status: u16, body: &
 
 #[cfg(test)]
 mod mcp_hardening_tests {
-    use super::{
-        origin_allowed, read_request_with_timeout, MAX_BODY_BYTES,
-        REQUEST_READ_TIMEOUT,
-    };
+    use super::{origin_allowed, read_request_with_timeout, MAX_BODY_BYTES, REQUEST_READ_TIMEOUT};
     use tokio::io::{AsyncWriteExt, BufReader};
     use tokio::time::Duration;
 
@@ -428,12 +439,11 @@ mod mcp_hardening_tests {
     async fn stalled_request_line_hits_deadline() {
         let (_client, server) = tokio::io::duplex(64);
         let mut reader = BufReader::new(server);
-        let err = match read_request_with_timeout(&mut reader, None, Duration::from_millis(20))
-            .await
-        {
-            Err(err) => err,
-            Ok(_) => panic!("stalled request line should time out"),
-        };
+        let err =
+            match read_request_with_timeout(&mut reader, None, Duration::from_millis(20)).await {
+                Err(err) => err,
+                Ok(_) => panic!("stalled request line should time out"),
+            };
         assert!(err.to_string().contains("timed out"));
     }
 
@@ -451,12 +461,11 @@ mod mcp_hardening_tests {
             .unwrap();
 
         let mut reader = BufReader::new(server);
-        let err = match read_request_with_timeout(&mut reader, None, Duration::from_millis(20))
-            .await
-        {
-            Err(err) => err,
-            Ok(_) => panic!("stalled request body should time out"),
-        };
+        let err =
+            match read_request_with_timeout(&mut reader, None, Duration::from_millis(20)).await {
+                Err(err) => err,
+                Ok(_) => panic!("stalled request body should time out"),
+            };
         assert!(err.to_string().contains("timed out"));
     }
 }

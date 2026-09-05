@@ -1,3 +1,5 @@
+#![allow(clippy::too_many_arguments)]
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -50,6 +52,44 @@ struct Args {
     /// and survives in command pipelines.
     #[arg(long, global = true)]
     allow_private_network: bool,
+
+    /// Allow literal IP connections to specific networks/ports (e.g. Tailscale mesh).
+    /// Format: `a.b.c.d/nn[:port]` or `[v6]/nn[:port]`. Repeatable, or set
+    /// via `OBSCURA_ALLOW_NET` (comma-separated).
+    #[arg(
+        long,
+        global = true,
+        value_name = "ENTRY",
+        env = "OBSCURA_ALLOW_NET",
+        value_delimiter = ','
+    )]
+    allow_net: Vec<String>,
+
+    /// Playwright storage_state JSON file(s) to load before navigation.
+    /// Repeatable: can be specified multiple times and files are loaded in order.
+    #[arg(
+        long,
+        global = true,
+        value_name = "FILE",
+        env = "OBSCURA_STORAGE_STATE",
+        value_delimiter = ',',
+        action = clap::ArgAction::Append
+    )]
+    storage_state: Vec<std::path::PathBuf>,
+
+    /// Comma-separated domains to load cookie jars from ~/.reach/jars/<sanitized>.json (or $REACH_JARS_DIR).
+    #[arg(
+        long,
+        global = true,
+        value_name = "DOMAINS",
+        env = "OBSCURA_JARS",
+        value_delimiter = ','
+    )]
+    jars: Vec<String>,
+
+    /// Write full Playwright storage_state JSON on exit atomically.
+    #[arg(long, global = true, value_name = "FILE")]
+    storage_state_out: Option<std::path::PathBuf>,
 
     /// Pass raw flags to V8, in the same form V8/Chromium/Node accept
     /// (e.g. `"--max-old-space-size=4096 --max-semi-space-size=64 --expose-gc"`).
@@ -353,6 +393,15 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if !args.allow_net.is_empty() {
+        // SAFETY: set_var is unsafe in newer rustc; this runs before any
+        // spawned thread inspects the env, so it's effectively single
+        // threaded at this point.
+        unsafe {
+            std::env::set_var("OBSCURA_ALLOW_NET", args.allow_net.join(","));
+        }
+    }
+
     let global_proxy = args.proxy.clone();
     let stealth = args.stealth;
     let obey_robots = args.obey_robots;
@@ -396,9 +445,49 @@ async fn main() -> anyhow::Result<()> {
                 tracing::info!("Stealth mode enabled (tracker blocking)");
             }
 
-            if workers > 1 {
+            let _temp_storage_dir;
+            let effective_storage_dir = if storage_dir.is_some() {
+                storage_dir
+            } else if !args.storage_state.is_empty()
+                || !args.jars.is_empty()
+                || args.storage_state_out.is_some()
+            {
+                let tmp = tempfile::tempdir()?;
+                let path = tmp.path().to_path_buf();
+                _temp_storage_dir = Some(tmp);
+                Some(path)
+            } else {
+                None
+            };
+
+            if let Some(ref s_dir) = effective_storage_dir {
+                std::fs::create_dir_all(s_dir)?;
+                if !args.storage_state.is_empty() || !args.jars.is_empty() {
+                    let init_ctx = BrowserContext::with_storage_and_network(
+                        "init".to_string(),
+                        proxy.clone(),
+                        stealth,
+                        user_agent.clone(),
+                        Some(s_dir.clone()),
+                        args.allow_private_network,
+                    );
+                    load_storage_states_and_jars(&init_ctx, &args.storage_state, &args.jars)?;
+                    init_ctx.save_cookies();
+                }
+            }
+
+            let serve_res = if workers > 1 {
                 tracing::info!("{} worker processes", workers);
-                run_multi_worker_serve(port, host, workers, proxy, stealth, user_agent).await?;
+                run_multi_worker_serve(
+                    port,
+                    host,
+                    workers,
+                    proxy,
+                    stealth,
+                    user_agent,
+                    effective_storage_dir.clone(),
+                )
+                .await
             } else {
                 obscura_cdp::start_with_serve_options_and_limit(
                     port,
@@ -407,12 +496,28 @@ async fn main() -> anyhow::Result<()> {
                     stealth,
                     user_agent,
                     allow_file_access,
-                    storage_dir,
+                    effective_storage_dir.clone(),
                     args.allow_private_network,
                     max_connections,
                 )
-                .await?;
+                .await
+            };
+
+            if let Some(ref out_path) = args.storage_state_out {
+                if let Some(ref s_dir) = effective_storage_dir {
+                    let state_path = s_dir.join("storage_state.json");
+                    if state_path.exists() {
+                        let data = std::fs::read_to_string(&state_path)?;
+                        write_atomic(out_path, &data)?;
+                    } else {
+                        let empty = serde_json::json!({ "cookies": [], "origins": [] });
+                        let data = serde_json::to_string_pretty(&empty)?;
+                        write_atomic(out_path, &data)?;
+                    }
+                }
             }
+
+            serve_res?;
         }
         Some(Command::Fetch {
             url,
@@ -435,7 +540,9 @@ async fn main() -> anyhow::Result<()> {
                     anyhow::bail!("Pass URLs via a positional argument or --file, not both.");
                 }
                 if screenshot.is_some() {
-                    anyhow::bail!("--screenshot is only supported for a single URL, not --file batch mode.");
+                    anyhow::bail!(
+                        "--screenshot is only supported for a single URL, not --file batch mode."
+                    );
                 }
                 // Batch mode is raw HTTP only. Rendering each URL through the
                 // browser/JS stack is what `scrape` is for.
@@ -454,7 +561,7 @@ async fn main() -> anyhow::Result<()> {
                     global_proxy,
                     output,
                     quiet,
-                    stealth
+                    stealth,
                 )
                 .await?;
             } else {
@@ -482,6 +589,9 @@ async fn main() -> anyhow::Result<()> {
                     args.allow_private_network,
                     obey_robots,
                     screenshot,
+                    args.storage_state,
+                    args.jars,
+                    args.storage_state_out,
                 )
                 .await?;
             }
@@ -540,6 +650,7 @@ async fn run_multi_worker_serve(
     proxy: Option<String>,
     stealth: bool,
     user_agent: Option<String>,
+    storage_dir: Option<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt as _;
     use tokio::net::TcpListener;
@@ -563,6 +674,9 @@ async fn run_multi_worker_serve(
         }
         if stealth {
             cmd.arg("--stealth");
+        }
+        if let Some(ref s_dir) = storage_dir {
+            cmd.arg("--storage-dir").arg(s_dir);
         }
         cmd.stdout(std::process::Stdio::null());
         cmd.stderr(std::process::Stdio::null());
@@ -676,6 +790,133 @@ fn configure_fetch_navigation_timeout(page: &mut Page, timeout_secs: u64) {
     page.set_navigation_timeout(Duration::from_secs(timeout_secs));
 }
 
+fn resolve_jars_dir() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("REACH_JARS_DIR")
+        .or_else(|_| std::env::var("REACH_JARS_PATH"))
+        .or_else(|_| std::env::var("OBSCURA_JARS_DIR"))
+    {
+        if !dir.trim().is_empty() {
+            return std::path::PathBuf::from(dir.trim());
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".to_string());
+    let reach_jars = std::path::PathBuf::from(&home).join(".reach").join("jars");
+    if reach_jars.exists() {
+        reach_jars
+    } else {
+        let local_jars = std::path::PathBuf::from(&home)
+            .join(".local")
+            .join("share")
+            .join("reach")
+            .join("jars");
+        if local_jars.exists() {
+            local_jars
+        } else {
+            reach_jars
+        }
+    }
+}
+
+fn load_storage_states_and_jars(
+    context: &BrowserContext,
+    storage_states: &[std::path::PathBuf],
+    jars: &[String],
+) -> anyhow::Result<()> {
+    for path in storage_states {
+        if !path.exists() {
+            anyhow::bail!("Storage state file not found: {}", path.display());
+        }
+        let count = context.load_storage_state_file(path)?;
+        tracing::info!(
+            "Loaded {} cookies from storage state {}",
+            count,
+            path.display()
+        );
+    }
+
+    if !jars.is_empty() {
+        let jars_dir = resolve_jars_dir();
+        for domain in jars {
+            let domain = domain.trim();
+            if domain.is_empty() {
+                continue;
+            }
+            let clean = obscura_net::sanitize_domain(domain);
+            let jar_path = jars_dir.join(format!("{clean}.json"));
+            if jar_path.exists() {
+                let count = context.load_storage_state_file(&jar_path)?;
+                tracing::info!("Loaded {} cookies from jar {}", count, jar_path.display());
+            } else {
+                tracing::warn!(
+                    "Cookie jar for '{}' not found at {}",
+                    domain,
+                    jar_path.display()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn write_atomic(path: &std::path::Path, content: &str) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    use std::io::Write;
+    tmp.write_all(content.as_bytes())?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
+}
+
+fn handle_storage_state_exit(
+    context: &BrowserContext,
+    mut page: Option<&mut Page>,
+    out_path: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
+    if let Some(ref mut p) = page {
+        let storage_js = r#"(function(){
+            var ls = [], ss = [];
+            try { for (var i = 0; i < localStorage.length; i++) { var k = localStorage.key(i); ls.push({name: k, value: localStorage.getItem(k)}); } } catch(e) {}
+            try { for (var j = 0; j < sessionStorage.length; j++) { var k2 = sessionStorage.key(j); ss.push({name: k2, value: sessionStorage.getItem(k2)}); } } catch(e) {}
+            return { origin: location.origin || '', localStorage: ls, sessionStorage: ss };
+        })()"#;
+        let storage_val = p.evaluate(storage_js);
+        if storage_val.is_object() {
+            if let Ok(origin_entry) =
+                serde_json::from_value::<obscura_net::StorageStateOrigin>(storage_val)
+            {
+                if !origin_entry.origin.is_empty()
+                    && origin_entry.origin != "null"
+                    && origin_entry.origin != "about:blank"
+                {
+                    if let Ok(mut pending) = context.pending_origins.lock() {
+                        let current_norm = origin_entry.origin.trim_end_matches('/');
+                        pending.retain(|po| {
+                            !po.origin
+                                .trim_end_matches('/')
+                                .eq_ignore_ascii_case(current_norm)
+                        });
+                        pending.push(origin_entry);
+                    }
+                }
+            }
+        }
+    }
+
+    context.save_cookies();
+
+    if let Some(path) = out_path {
+        context.save_storage_state_file(path)?;
+    }
+
+    Ok(())
+}
+
 async fn run_fetch(
     url_str: &str,
     dump: Option<DumpFormat>,
@@ -694,6 +935,9 @@ async fn run_fetch(
     allow_private_network: bool,
     obey_robots: bool,
     screenshot: Option<std::path::PathBuf>,
+    storage_state: Vec<std::path::PathBuf>,
+    jars: Vec<String>,
+    storage_state_out: Option<std::path::PathBuf>,
 ) -> anyhow::Result<()> {
     // Whether the user explicitly passed --dump. With --eval also present this
     // decides whether we return the eval value or read the page after the
@@ -706,15 +950,13 @@ async fn run_fetch(
     // payloads (images, fonts, …) and any non-HTML resource where parsing the
     // body through the DOM/JS layer would corrupt or discard data.
     if dump == DumpFormat::Original {
-        let bytes = fetch_original_bytes(
-            url_str,
-            proxy,
-            user_agent.clone(),
-            timeout_secs,
-            stealth,
-        )
-        .await?;
+        let bytes =
+            fetch_original_bytes(url_str, proxy, user_agent.clone(), timeout_secs, stealth).await?;
         write_or_print_bytes(&bytes, output.as_ref()).await?;
+        if let Some(ref out_path) = storage_state_out {
+            let empty = serde_json::json!({ "cookies": [], "origins": [] });
+            write_atomic(out_path, &serde_json::to_string_pretty(&empty)?)?;
+        }
         return Ok(());
     }
 
@@ -727,6 +969,7 @@ async fn run_fetch(
         allow_private_network,
     );
     context.obey_robots = obey_robots;
+    load_storage_states_and_jars(&context, &storage_state, &jars)?;
     let context = Arc::new(context);
     let mut page = Page::new("fetch-page".to_string(), context.clone());
     // Keep the browser's end-to-end navigation ceiling aligned with the CLI
@@ -844,6 +1087,7 @@ async fn run_fetch(
     // pages stay fast.
     settle_page(&mut page, wait_secs, wait_is_fixed).await;
 
+    #[cfg(feature = "render")]
     let mut deferred_eval_output = None;
     let initial_controlled_scroll = if eval_at_capture_boundary {
         controlled_scroll_request.as_ref().map(|(x, requested_y)| {
@@ -885,11 +1129,14 @@ async fn run_fetch(
                     other => other.to_string(),
                 };
                 write_or_print(rendered, output.as_ref()).await?;
-                context.save_cookies();
+                handle_storage_state_exit(&context, Some(&mut page), storage_state_out.as_deref())?;
                 return Ok(());
             }
             if screenshot.is_some() {
-                deferred_eval_output = Some(result);
+                #[cfg(feature = "render")]
+                {
+                    deferred_eval_output = Some(result);
+                }
             }
 
             // --eval combined with --selector, --dump, and/or --screenshot
@@ -1059,7 +1306,7 @@ async fn run_fetch(
                     std::fs::metadata(path).map(|m| m.len()).unwrap_or(0)
                 );
             }
-            context.save_cookies();
+            handle_storage_state_exit(&context, Some(&mut page), storage_state_out.as_deref())?;
             return Ok(());
         }
         #[cfg(not(feature = "render"))]
@@ -1083,8 +1330,7 @@ async fn run_fetch(
     };
     write_or_print(rendered, output.as_ref()).await?;
 
-    // Save cookies to disk if storage_dir is configured
-    context.save_cookies();
+    handle_storage_state_exit(&context, Some(&mut page), storage_state_out.as_deref())?;
 
     Ok(())
 }
@@ -1948,9 +2194,11 @@ fn dump_assets(page: &Page) -> String {
 mod tests {
     use super::{
         configure_fetch_navigation_timeout, effective_v8_flags, extract_assets,
-        extract_readable_text, fetch_original_bytes, is_quiet_command, link_kind_from_rel,
-        merge_proxy, normalize_v8_flags, read_urls_from_file, resolve_asset_url, select_log_filter,
-        write_or_print, write_or_print_bytes, Args, Command, DumpFormat, DEFAULT_V8_FLAGS,
+        extract_readable_text, fetch_original_bytes, handle_storage_state_exit, is_quiet_command,
+        link_kind_from_rel, load_storage_states_and_jars, merge_proxy, normalize_v8_flags,
+        read_urls_from_file, resolve_asset_url, resolve_jars_dir, select_log_filter,
+        write_or_print, write_or_print_bytes, Args, BrowserContext, Command, DumpFormat,
+        DEFAULT_V8_FLAGS,
     };
     use clap::Parser;
     use obscura_dom::parse_html;
@@ -2110,7 +2358,10 @@ mod tests {
 
         let _ = tokio::fs::remove_file(&path).await;
 
-        assert_eq!(bytes, PNG_BYTES, "stealth=true must not change file:// handling");
+        assert_eq!(
+            bytes, PNG_BYTES,
+            "stealth=true must not change file:// handling"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2340,14 +2591,9 @@ mod tests {
 
     #[test]
     fn fetch_screenshot_has_a_short_alias_and_rejects_batch_mode() {
-        let args = Args::try_parse_from([
-            "obscura",
-            "fetch",
-            "https://example.com",
-            "-s",
-            "page.png",
-        ])
-        .unwrap();
+        let args =
+            Args::try_parse_from(["obscura", "fetch", "https://example.com", "-s", "page.png"])
+                .unwrap();
         match args.command {
             Some(Command::Fetch { screenshot, .. }) => {
                 assert_eq!(screenshot, Some(std::path::PathBuf::from("page.png")));
@@ -2371,16 +2617,15 @@ mod tests {
             Some(Command::Fetch { timeout, .. }) => timeout,
             _ => panic!("expected Fetch command"),
         };
-        let context = std::sync::Arc::new(
-            obscura_browser::BrowserContext::with_storage_and_network(
+        let context =
+            std::sync::Arc::new(obscura_browser::BrowserContext::with_storage_and_network(
                 "cli-timeout-test".to_string(),
                 None,
                 false,
                 None,
                 None,
                 true,
-            ),
-        );
+            ));
         let mut page = obscura_browser::Page::new("cli-timeout-test".to_string(), context);
         configure_fetch_navigation_timeout(&mut page, timeout);
         page.navigation_timeout()
@@ -2388,14 +2633,9 @@ mod tests {
 
     #[test]
     fn fetch_timeout_sets_the_page_navigation_budget() {
-        let args = Args::try_parse_from([
-            "obscura",
-            "fetch",
-            "https://example.com",
-            "--timeout",
-            "50",
-        ])
-        .unwrap();
+        let args =
+            Args::try_parse_from(["obscura", "fetch", "https://example.com", "--timeout", "50"])
+                .unwrap();
         assert_eq!(
             configured_fetch_timeout(args),
             std::time::Duration::from_secs(50)
@@ -2668,5 +2908,128 @@ mod tests {
         assert_eq!(lines.len(), 1, "got {lines:?}");
         assert!(lines[0].contains("\"https://example.test/ok.html\""));
         assert!(lines[0].contains("\"iframe\""));
+    }
+
+    #[test]
+    fn parsed_allow_net_flag() {
+        let args = Args::try_parse_from([
+            "obscura",
+            "--allow-net",
+            "100.64.0.0/10",
+            "--allow-net",
+            "10.0.0.0/8:8080",
+            "fetch",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.allow_net,
+            vec!["100.64.0.0/10".to_string(), "10.0.0.0/8:8080".to_string()]
+        );
+    }
+
+    #[test]
+    fn parsed_storage_state_and_jars_flags() {
+        let args = Args::try_parse_from([
+            "obscura",
+            "--storage-state",
+            "/path/to/state1.json",
+            "--storage-state",
+            "/path/to/state2.json",
+            "--jars",
+            "github.com,google.com",
+            "--storage-state-out",
+            "/path/to/out.json",
+            "fetch",
+            "https://example.com",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.storage_state,
+            vec![
+                std::path::PathBuf::from("/path/to/state1.json"),
+                std::path::PathBuf::from("/path/to/state2.json")
+            ]
+        );
+        assert_eq!(
+            args.jars,
+            vec!["github.com".to_string(), "google.com".to_string()]
+        );
+        assert_eq!(
+            args.storage_state_out,
+            Some(std::path::PathBuf::from("/path/to/out.json"))
+        );
+
+        let serve_args = Args::try_parse_from([
+            "obscura",
+            "serve",
+            "--storage-state",
+            "/path/to/state.json",
+            "--jars",
+            "github.com",
+            "--storage-state-out",
+            "/path/to/out.json",
+        ])
+        .unwrap();
+        assert_eq!(
+            serve_args.storage_state,
+            vec![std::path::PathBuf::from("/path/to/state.json")]
+        );
+        assert_eq!(serve_args.jars, vec!["github.com".to_string()]);
+        assert_eq!(
+            serve_args.storage_state_out,
+            Some(std::path::PathBuf::from("/path/to/out.json"))
+        );
+    }
+
+    #[test]
+    fn test_resolve_jars_dir_env() {
+        let custom = "/tmp/test_reach_jars";
+        std::env::set_var("REACH_JARS_DIR", custom);
+        assert_eq!(resolve_jars_dir(), std::path::PathBuf::from(custom));
+        std::env::remove_var("REACH_JARS_DIR");
+    }
+
+    #[test]
+    fn test_load_storage_states_and_atomic_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_path = tmp.path().join("state.json");
+        let content = serde_json::json!({
+            "cookies": [
+                {
+                    "name": "session_id",
+                    "value": "xyz123",
+                    "domain": "example.com",
+                    "path": "/",
+                    "httpOnly": true,
+                    "secure": true,
+                    "sameSite": "Lax",
+                    "expires": -1.0
+                }
+            ],
+            "origins": [
+                {
+                    "origin": "https://example.com",
+                    "localStorage": [
+                        { "name": "theme", "value": "dark" }
+                    ]
+                }
+            ]
+        });
+        std::fs::write(&state_path, serde_json::to_string(&content).unwrap()).unwrap();
+
+        let ctx = BrowserContext::with_options("test-cli".to_string(), None, false);
+        load_storage_states_and_jars(&ctx, &[state_path], &[]).unwrap();
+
+        let out_path = tmp.path().join("out.json");
+        handle_storage_state_exit(&ctx, None, Some(&out_path)).unwrap();
+
+        assert!(out_path.exists());
+        let read_data = std::fs::read_to_string(&out_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&read_data).unwrap();
+        assert_eq!(parsed["cookies"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["cookies"][0]["name"], "session_id");
+        assert_eq!(parsed["origins"].as_array().unwrap().len(), 1);
+        assert_eq!(parsed["origins"][0]["origin"], "https://example.com");
     }
 }

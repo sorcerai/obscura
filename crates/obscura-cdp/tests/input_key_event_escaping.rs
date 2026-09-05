@@ -39,7 +39,13 @@ document.body.addEventListener('keydown', function (e) { window.__keys.push(e.ke
     format!("http://{addr}/")
 }
 
-async fn cdp(ctx: &mut CdpContext, id: u64, method: &str, params: Value, session_id: &str) -> Value {
+async fn cdp(
+    ctx: &mut CdpContext,
+    id: u64,
+    method: &str,
+    params: Value,
+    session_id: &str,
+) -> Value {
     let resp = dispatch(
         &CdpRequest {
             id,
@@ -50,7 +56,11 @@ async fn cdp(ctx: &mut CdpContext, id: u64, method: &str, params: Value, session
         ctx,
     )
     .await;
-    assert!(resp.error.is_none(), "CDP {method} failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "CDP {method} failed: {:?}",
+        resp.error
+    );
     resp.result.unwrap_or_else(|| json!({}))
 }
 
@@ -63,7 +73,14 @@ async fn dispatch_key_event_escapes_backslash_in_key_and_code() {
     let session_id = "session-1";
     ctx.sessions.insert(session_id.to_string(), page_id.clone());
 
-    cdp(&mut ctx, 1, "Page.navigate", json!({"url": url, "waitUntil": "load"}), session_id).await;
+    cdp(
+        &mut ctx,
+        1,
+        "Page.navigate",
+        json!({"url": url, "waitUntil": "load"}),
+        session_id,
+    )
+    .await;
 
     // The backslash key: Chrome sends key="\" (a single backslash) code="Backslash".
     cdp(
@@ -95,8 +112,7 @@ async fn dispatch_key_event_escapes_backslash_in_key_and_code() {
     )
     .await;
 
-    let keys: Vec<String> =
-        serde_json::from_str(v["result"]["value"].as_str().unwrap()).unwrap();
+    let keys: Vec<String> = serde_json::from_str(v["result"]["value"].as_str().unwrap()).unwrap();
     assert_eq!(
         keys,
         vec!["\\|Backslash".to_string(), "a|KeyA".to_string()],
@@ -123,7 +139,14 @@ async fn dispatch_key_event_char_carries_a_newline_into_a_textarea() {
     let session_id = "session-1";
     ctx.sessions.insert(session_id.to_string(), page_id.clone());
 
-    cdp(&mut ctx, 1, "Page.navigate", json!({"url": url, "waitUntil": "load"}), session_id).await;
+    cdp(
+        &mut ctx,
+        1,
+        "Page.navigate",
+        json!({"url": url, "waitUntil": "load"}),
+        session_id,
+    )
+    .await;
     cdp(
         &mut ctx,
         2,
@@ -178,7 +201,14 @@ async fn insert_text_types_into_the_focused_field() {
     let session_id = "session-1";
     ctx.sessions.insert(session_id.to_string(), page_id.clone());
 
-    cdp(&mut ctx, 1, "Page.navigate", json!({"url": url, "waitUntil": "load"}), session_id).await;
+    cdp(
+        &mut ctx,
+        1,
+        "Page.navigate",
+        json!({"url": url, "waitUntil": "load"}),
+        session_id,
+    )
+    .await;
     cdp(
         &mut ctx,
         2,

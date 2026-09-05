@@ -1,8 +1,11 @@
-pub mod server;
-pub mod dispatch;
-pub mod types;
-pub mod domains;
+#![allow(deprecated)]
+#![allow(clippy::all)]
+
 pub mod cookie_params;
+pub mod dispatch;
+pub mod domains;
+pub mod server;
+pub mod types;
 pub(crate) mod util;
 
 pub use server::{

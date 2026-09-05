@@ -81,7 +81,9 @@ fn accept_thread_survives_silent_connections() {
         let cdp = tokio::time::timeout(Duration::from_secs(5), async {
             let (mut ws, _) = connect_async(&url).await.expect("handshake");
             ws.send(Message::Text(
-                json!({"id": 1, "method": "Target.getTargets"}).to_string().into(),
+                json!({"id": 1, "method": "Target.getTargets"})
+                    .to_string()
+                    .into(),
             ))
             .await
             .expect("send");
@@ -94,14 +96,20 @@ fn accept_thread_survives_silent_connections() {
                 if let Message::Text(t) = msg {
                     let v: serde_json::Value = serde_json::from_str(&t).expect("cdp json");
                     if v.get("id").and_then(|i| i.as_u64()) == Some(1) {
-                        assert!(v["result"]["targetInfos"].is_array(), "getTargets reply: {v}");
+                        assert!(
+                            v["result"]["targetInfos"].is_array(),
+                            "getTargets reply: {v}"
+                        );
                         return;
                     }
                 }
             }
         })
         .await;
-        assert!(cdp.is_ok(), "CDP handshake wedged behind silent connections");
+        assert!(
+            cdp.is_ok(),
+            "CDP handshake wedged behind silent connections"
+        );
 
         // 2. The /json control plane shares the accept thread and must stay
         //    reachable too.

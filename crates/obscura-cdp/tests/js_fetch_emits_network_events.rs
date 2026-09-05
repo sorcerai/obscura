@@ -57,7 +57,13 @@ window.__done = new Promise(function (resolve) {
     format!("http://{addr}/")
 }
 
-async fn cdp(ctx: &mut CdpContext, id: u64, method: &str, params: Value, session_id: &str) -> Value {
+async fn cdp(
+    ctx: &mut CdpContext,
+    id: u64,
+    method: &str,
+    params: Value,
+    session_id: &str,
+) -> Value {
     let resp = dispatch(
         &CdpRequest {
             id,
@@ -68,7 +74,11 @@ async fn cdp(ctx: &mut CdpContext, id: u64, method: &str, params: Value, session
         ctx,
     )
     .await;
-    assert!(resp.error.is_none(), "CDP {method} failed: {:?}", resp.error);
+    assert!(
+        resp.error.is_none(),
+        "CDP {method} failed: {:?}",
+        resp.error
+    );
     resp.result.unwrap_or_else(|| json!({}))
 }
 
@@ -79,7 +89,13 @@ fn drain_request_urls(ctx: &mut CdpContext) -> Vec<String> {
         .pending_events
         .iter()
         .filter(|e| e.method == "Network.requestWillBeSent")
-        .filter_map(|e| e.params.get("request").and_then(|r| r.get("url")).and_then(|u| u.as_str()).map(str::to_string))
+        .filter_map(|e| {
+            e.params
+                .get("request")
+                .and_then(|r| r.get("url"))
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+        })
         .collect();
     ctx.pending_events.clear();
     urls
@@ -98,7 +114,12 @@ fn response_request_id(ctx: &CdpContext, url_needle: &str) -> Option<String> {
                     .map(|u| u.contains(url_needle))
                     .unwrap_or(false)
         })
-        .and_then(|e| e.params.get("requestId").and_then(|v| v.as_str()).map(str::to_string))
+        .and_then(|e| {
+            e.params
+                .get("requestId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -128,7 +149,13 @@ async fn js_fetch_emits_network_request_and_response() {
         .pending_events
         .iter()
         .filter(|e| e.method == "Network.requestWillBeSent")
-        .filter_map(|e| e.params.get("request").and_then(|r| r.get("url")).and_then(|u| u.as_str()).map(str::to_string))
+        .filter_map(|e| {
+            e.params
+                .get("request")
+                .and_then(|r| r.get("url"))
+                .and_then(|u| u.as_str())
+                .map(str::to_string)
+        })
         .collect::<Vec<_>>();
     assert!(
         request_urls.iter().any(|u| u.contains("/api/data.json")),
@@ -178,7 +205,14 @@ async fn navigation_without_script_fetch_is_unaffected() {
     let session_id = "session-1";
     ctx.sessions.insert(session_id.to_string(), page_id.clone());
 
-    cdp(&mut ctx, 1, "Page.navigate", json!({"url": base, "waitUntil": "load"}), session_id).await;
+    cdp(
+        &mut ctx,
+        1,
+        "Page.navigate",
+        json!({"url": base, "waitUntil": "load"}),
+        session_id,
+    )
+    .await;
 
     let urls = drain_request_urls(&mut ctx);
     assert!(

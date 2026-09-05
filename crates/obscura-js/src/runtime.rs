@@ -17,19 +17,17 @@ use crate::import_map::ImportMap;
 use crate::module_loader::{ModuleLoadActivity, ObscuraModuleLoader};
 #[cfg(all(test, feature = "render"))]
 use crate::ops::ensure_prepared_render;
-use crate::ops::{
-    build_extension, node_is_script, ObscuraState, RuntimeEvent, RuntimeExceptionEvent,
-    StoredNetworkResponseBody,
-};
 #[cfg(feature = "render")]
 use crate::ops::{
     begin_animation_task, clamp_scroll_offset, document_base_url, ensure_resolved_scroll,
 };
+use crate::ops::{
+    build_extension, node_is_script, ObscuraState, RuntimeEvent, RuntimeExceptionEvent,
+    StoredNetworkResponseBody,
+};
 
 #[cfg(feature = "render")]
-struct RuntimeCanvasSurfaceSource<'a>(
-    &'a HashMap<NodeId, crate::ops::CanvasBackingSurface>,
-);
+struct RuntimeCanvasSurfaceSource<'a>(&'a HashMap<NodeId, crate::ops::CanvasBackingSurface>);
 
 #[cfg(feature = "render")]
 impl obscura_render::CanvasSurfaceSource for RuntimeCanvasSurfaceSource<'_> {
@@ -111,13 +109,9 @@ fn with_sync_render_loading_disabled<R>(
     state: &mut ObscuraState,
     capture: impl FnOnce(&mut ObscuraState) -> R,
 ) -> R {
-    let previous = state
-        .render_resources
-        .set_sync_loading_enabled(false);
+    let previous = state.render_resources.set_sync_loading_enabled(false);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| capture(state)));
-    state
-        .render_resources
-        .set_sync_loading_enabled(previous);
+    state.render_resources.set_sync_loading_enabled(previous);
     match result {
         Ok(value) => value,
         Err(payload) => std::panic::resume_unwind(payload),
@@ -500,12 +494,8 @@ impl ObscuraJsRuntime {
         let state_clone = state.clone();
         let import_map = state.borrow().import_map.clone();
 
-        let module_loader = ObscuraModuleLoader::with_page_state(
-            base_url,
-            proxy_url,
-            &state,
-            import_map.clone(),
-        );
+        let module_loader =
+            ObscuraModuleLoader::with_page_state(base_url, proxy_url, &state, import_map.clone());
         let module_load_activity = module_loader.activity();
         let loaded_module_specifiers = module_loader.loaded_specifiers();
         let module_loader = Rc::new(module_loader);
@@ -930,7 +920,9 @@ impl ObscuraJsRuntime {
             entry.set(scope, key.into(), document);
         }
         let index = v8::Integer::new_from_unsigned(scope, frame_id);
-        registry.set(scope, index.into(), entry.into()).unwrap_or(false)
+        registry
+            .set(scope, index.into(), entry.into())
+            .unwrap_or(false)
     }
 
     /// The table ops consult to find the calling realm's document.
@@ -980,7 +972,7 @@ impl ObscuraJsRuntime {
             .remove_near_heap_limit_callback(restore_limit);
         let isolate_handle = self.isolate_handle.clone();
         let heap_limit_state = self.heap_limit_state.clone();
-        install_heap_limit_guard(&mut *self.runtime(), isolate_handle, heap_limit_state);
+        install_heap_limit_guard(&mut self.runtime(), isolate_handle, heap_limit_state);
         tracing::warn!("V8 heap limit reached: terminated the current JavaScript task");
         true
     }
@@ -1312,18 +1304,11 @@ impl ObscuraJsRuntime {
     pub fn set_screen_size_override(&mut self, size: Option<(f64, f64)>, emulated: bool) {
         let script = match size {
             Some((width, height))
-                if width.is_finite()
-                    && height.is_finite()
-                    && width > 0.0
-                    && height > 0.0 =>
+                if width.is_finite() && height.is_finite() && width > 0.0 && height > 0.0 =>
             {
-                format!(
-                    "globalThis.__obscura_set_screen_override({width},{height},{emulated});"
-                )
+                format!("globalThis.__obscura_set_screen_override({width},{height},{emulated});")
             }
-            _ => format!(
-                "globalThis.__obscura_set_screen_override(null,null,{emulated});"
-            ),
+            _ => format!("globalThis.__obscura_set_screen_override(null,null,{emulated});"),
         };
         let _ = self.execute_runtime_script("<set-screen-size>", script);
     }
@@ -1339,10 +1324,7 @@ impl ObscuraJsRuntime {
     /// Select the document-timeline instant used by the next render flush.
     /// Returns false for invalid times and preserves the current sample.
     #[cfg(feature = "render")]
-    pub fn set_animation_sample_time(
-        &self,
-        sample: obscura_render::AnimationSampleTime,
-    ) -> bool {
+    pub fn set_animation_sample_time(&self, sample: obscura_render::AnimationSampleTime) -> bool {
         self.set_animation_sample(obscura_render::AnimationSample::document(
             sample.milliseconds,
         ))
@@ -1355,8 +1337,8 @@ impl ObscuraJsRuntime {
         }
         let mut state = self.state.borrow_mut();
         if state.animation_sample != sample {
-            let forward_document_sample =
-                sample.mode == obscura_render::AnimationSampleMode::DocumentTime
+            let forward_document_sample = sample.mode
+                == obscura_render::AnimationSampleMode::DocumentTime
                 && state.animation_sample.mode == obscura_render::AnimationSampleMode::DocumentTime
                 && sample.time.milliseconds > state.animation_sample.time.milliseconds;
             if forward_document_sample
@@ -1442,11 +1424,7 @@ impl ObscuraJsRuntime {
         viewport: (f32, f32),
         base_url: Option<&str>,
     ) -> Option<Vec<u8>> {
-        self.screenshot_prepared_with_surface_color(
-            viewport,
-            base_url,
-            [255, 255, 255, 255],
-        )
+        self.screenshot_prepared_with_surface_color(viewport, base_url, [255, 255, 255, 255])
     }
 
     /// Paint an unprepared view of the current document against the runtime's
@@ -1697,9 +1675,7 @@ impl ObscuraJsRuntime {
                             .map(|value| value.trim().to_ascii_lowercase())
                             .as_deref()
                         {
-                            Some("use-credentials") => {
-                                crate::ops::ImageRequestProfile::CorsInclude
-                            }
+                            Some("use-credentials") => crate::ops::ImageRequestProfile::CorsInclude,
                             Some(_) => crate::ops::ImageRequestProfile::CorsSameOrigin,
                             None => crate::ops::ImageRequestProfile::NoCorsInclude,
                         };
@@ -2416,8 +2392,7 @@ impl ObscuraJsRuntime {
             Err(payload) => {
                 let message = panic_payload_message(payload.as_ref());
                 let outcome = if message.contains("Module already evaluated") {
-                    self
-                        .runtime()
+                    self.runtime()
                         .get_module_namespace(module_id)
                         .map(|_| ())
                         .map_err(|error| format!("{} eval error: {}", what, error))
@@ -2578,6 +2553,7 @@ impl ObscuraJsRuntime {
         result
     }
 
+    #[allow(clippy::result_large_err)]
     fn execute_classic_script(&mut self, name: &str, source: &str) -> Result<(), String> {
         self.begin_javascript_task();
         let script_url = name.to_string();
@@ -2610,7 +2586,10 @@ impl ObscuraJsRuntime {
             let Some(script) = script else {
                 if scope.is_execution_terminating() {
                     scope.cancel_terminate_execution();
-                    return Err(("JS error: Uncaught Error: execution terminated".to_string(), None));
+                    return Err((
+                        "JS error: Uncaught Error: execution terminated".to_string(),
+                        None,
+                    ));
                 }
                 return match scope.exception() {
                     Some(exception) => {
@@ -2626,7 +2605,10 @@ impl ObscuraJsRuntime {
             if script.run(scope).is_none() {
                 if scope.is_execution_terminating() {
                     scope.cancel_terminate_execution();
-                    return Err(("JS error: Uncaught Error: execution terminated".to_string(), None));
+                    return Err((
+                        "JS error: Uncaught Error: execution terminated".to_string(),
+                        None,
+                    ));
                 }
                 return match scope.exception() {
                     Some(exception) => {
@@ -2793,9 +2775,9 @@ impl ObscuraJsRuntime {
 
     fn next_pending_timeout_delay_ms(&mut self) -> Option<f64> {
         self.evaluate("globalThis.__obscura_nextPendingTimeoutDelay?.() ?? -1")
-        .ok()
-        .and_then(|value| value.as_f64())
-        .filter(|delay| *delay >= 0.0)
+            .ok()
+            .and_then(|value| value.as_f64())
+            .filter(|delay| *delay >= 0.0)
     }
 
     /// Arm a hard wall-clock backstop on synchronous V8 work. A page stuck in a
@@ -2856,11 +2838,11 @@ impl ObscuraJsRuntime {
         // per cooperative task. Adding the floor after the observation budget
         // guarantees that even a task beginning just before `deadline` gets
         // the same bounded completion allowance.
-        let synchronous_budget = budget
-            .saturating_add(std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS));
-        let token =
-            self.arm_watchdog(synchronous_budget
-                + std::time::Duration::from_millis(WATCHDOG_SCHEDULING_MARGIN_MS));
+        let synchronous_budget =
+            budget.saturating_add(std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS));
+        let token = self.arm_watchdog(
+            synchronous_budget + std::time::Duration::from_millis(WATCHDOG_SCHEDULING_MARGIN_MS),
+        );
         let result = loop {
             if tokio::time::Instant::now() >= deadline {
                 break Ok(());
@@ -2936,12 +2918,10 @@ impl ObscuraJsRuntime {
                 .poll_event_loop(cx, deno_core::PollEventLoopOptions::default());
             match tick {
                 std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(Ok(true)),
-                std::task::Poll::Ready(Err(error)) => std::task::Poll::Ready(Err(format!(
-                    "Event loop error: {error}"
-                ))),
-                std::task::Poll::Pending if waiting_for_wake => {
-                    std::task::Poll::Ready(Ok(false))
+                std::task::Poll::Ready(Err(error)) => {
+                    std::task::Poll::Ready(Err(format!("Event loop error: {error}")))
                 }
+                std::task::Poll::Pending if waiting_for_wake => std::task::Poll::Ready(Ok(false)),
                 std::task::Poll::Pending => {
                     waiting_for_wake = true;
                     std::task::Poll::Pending
@@ -3011,12 +2991,10 @@ impl ObscuraJsRuntime {
                     tracing::warn!("page task error, continuing the event loop: {error}");
                     std::task::Poll::Ready(Ok(false))
                 }
-                std::task::Poll::Ready(Err(error)) => std::task::Poll::Ready(Err(format!(
-                    "Event loop error: {error}"
-                ))),
-                std::task::Poll::Pending if waiting_for_wake => {
-                    std::task::Poll::Ready(Ok(false))
+                std::task::Poll::Ready(Err(error)) => {
+                    std::task::Poll::Ready(Err(format!("Event loop error: {error}")))
                 }
+                std::task::Poll::Pending if waiting_for_wake => std::task::Poll::Ready(Ok(false)),
                 std::task::Poll::Pending => {
                     waiting_for_wake = true;
                     std::task::Poll::Pending
@@ -3070,8 +3048,7 @@ impl ObscuraJsRuntime {
         let activity_tail = std::time::Duration::from_millis(OBSERVABLE_ACTIVITY_TAIL_MS);
         let mut activity_deadline = deadline.min(started + activity_tail);
         let token = self.arm_watchdog(
-            budget
-                .saturating_add(std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS))
+            budget.saturating_add(std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS))
                 + std::time::Duration::from_millis(WATCHDOG_SCHEDULING_MARGIN_MS),
         );
         let mut generation = self.activity_generation();
@@ -3137,11 +3114,9 @@ impl ObscuraJsRuntime {
                     + std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS)
                     + std::time::Duration::from_millis(WATCHDOG_SCHEDULING_MARGIN_MS),
             );
-            let tick = tokio::time::timeout_at(
-                policy_deadline,
-                self.run_cooperative_event_loop_tick(),
-            )
-            .await;
+            let tick =
+                tokio::time::timeout_at(policy_deadline, self.run_cooperative_event_loop_tick())
+                    .await;
             let tick_fired = self.disarm_watchdog(tick_watchdog);
             if tick_fired {
                 break Ok(());
@@ -3221,11 +3196,7 @@ impl ObscuraJsRuntime {
     /// added ~7s per click because Puppeteer's `isIntersectingViewport`
     /// disconnects its observer in the callback, but our scheduled
     /// re-fires keep the event loop "busy" until they all fire.
-    pub async fn resolve_promises_until<F>(
-        &mut self,
-        mut done_check: F,
-        max_total_ms: u64,
-    ) -> bool
+    pub async fn resolve_promises_until<F>(&mut self, mut done_check: F, max_total_ms: u64) -> bool
     where
         F: FnMut(&mut Self) -> bool,
     {
@@ -3245,11 +3216,8 @@ impl ObscuraJsRuntime {
             let event_loop = entered_runtime_future(&mut self.js_runtime, |runtime| {
                 runtime.run_event_loop(deno_core::PollEventLoopOptions::default())
             });
-            let _ = tokio::time::timeout(
-                tokio::time::Duration::from_millis(tick_ms),
-                event_loop,
-            )
-            .await;
+            let _ =
+                tokio::time::timeout(tokio::time::Duration::from_millis(tick_ms), event_loop).await;
             if self.recover_heap_limit() {
                 return false;
             }
@@ -3419,10 +3387,10 @@ impl ObscuraJsRuntime {
         }
         let expression = self.evaluation_recipes.get(object_id)?.clone();
         let object_id_literal = js_string_literal(object_id);
-        let code = format!(
-            "globalThis.__obscura_objects[{object_id_literal}] = (\n{expression}\n);"
-        );
-        self.execute_runtime_script("<restore-cdp-object>", code).ok()?;
+        let code =
+            format!("globalThis.__obscura_objects[{object_id_literal}] = (\n{expression}\n);");
+        self.execute_runtime_script("<restore-cdp-object>", code)
+            .ok()?;
         let retrieval = format!("globalThis.__obscura_objects[{object_id_literal}]");
         self.object_store
             .insert(object_id.to_string(), retrieval.clone());
@@ -3953,10 +3921,8 @@ mod tests {
         // kept those declarations local to the compiled function, so they never
         // reached globalThis.
         let mut rt = setup_runtime("<html><body></body></html>");
-        rt.evaluate(
-            "setTimeout('var __leaked = 42; function __leakedFn(){ return 7; }', 0)",
-        )
-        .unwrap();
+        rt.evaluate("setTimeout('var __leaked = 42; function __leakedFn(){ return 7; }', 0)")
+            .unwrap();
         rt.run_event_loop_bounded(100).await.unwrap();
         let v = rt
             .evaluate(
@@ -4717,7 +4683,9 @@ mod tests {
 
     #[test]
     fn clone_node_deep_copies_children_and_attributes() {
-        let mut rt = setup_runtime(r#"<html><body><ul id="l"><li class="a">one</li><li class="b">two</li></ul></body></html>"#);
+        let mut rt = setup_runtime(
+            r#"<html><body><ul id="l"><li class="a">one</li><li class="b">two</li></ul></body></html>"#,
+        );
         let out = rt
             .evaluate(
                 "(function(){var c=document.getElementById('l').cloneNode(true); return c.children.length + '|' + c.children[0].className + '|' + c.children[1].textContent;})()",
@@ -4743,7 +4711,9 @@ mod tests {
 
     #[test]
     fn clone_node_shallow_copies_attributes_without_children() {
-        let mut rt = setup_runtime(r#"<html><body><div id="d" data-x="7"><span>kid</span></div></body></html>"#);
+        let mut rt = setup_runtime(
+            r#"<html><body><div id="d" data-x="7"><span>kid</span></div></body></html>"#,
+        );
         let out = rt
             .evaluate(
                 "(function(){var c=document.getElementById('d').cloneNode(false); return c.getAttribute('data-x') + '|' + c.childNodes.length;})()",
@@ -4760,7 +4730,10 @@ mod tests {
                 "(function(){var d=document.getElementById('d');d.style.color='red';d.style.fontSize='12px';var c=d.cloneNode(false);return c.style.color+'|'+c.style.fontSize+'|'+c.style.cssText;})()",
             )
             .unwrap();
-        assert_eq!(out, serde_json::json!("red|12px|color: red; font-size: 12px;"));
+        assert_eq!(
+            out,
+            serde_json::json!("red|12px|color: red; font-size: 12px;")
+        );
     }
 
     #[test]
@@ -4787,7 +4760,8 @@ mod tests {
 
     #[test]
     fn insert_adjacent_html_position_is_case_insensitive() {
-        let mut rt = setup_runtime(r#"<html><body><div id="host"><span>base</span></div></body></html>"#);
+        let mut rt =
+            setup_runtime(r#"<html><body><div id="host"><span>base</span></div></body></html>"#);
         let out = rt
             .evaluate("(function(){var h=document.getElementById('host'); h.insertAdjacentHTML('BeforeEnd','<b>x</b>'); return h.lastElementChild ? h.lastElementChild.tagName : 'NULL';})()")
             .unwrap();
@@ -4863,7 +4837,10 @@ mod tests {
         let v = rt
             .evaluate("(function(){var s=document.createElementNS('http://www.w3.org/2000/svg','svg');s.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href','#g');return s.getAttribute('xlink:href')+'|'+s.getAttributeNames()[0]+'|'+s.outerHTML;})()")
             .unwrap();
-        assert_eq!(v, serde_json::json!("#g|xlink:href|<svg xlink:href=\"#g\"></svg>"));
+        assert_eq!(
+            v,
+            serde_json::json!("#g|xlink:href|<svg xlink:href=\"#g\"></svg>")
+        );
     }
 
     #[test]
@@ -4901,9 +4878,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             v,
-            serde_json::json!(
-                "NamespaceError|InvalidCharacterError|NamespaceError|NamespaceError"
-            )
+            serde_json::json!("NamespaceError|InvalidCharacterError|NamespaceError|NamespaceError")
         );
     }
 
@@ -5485,15 +5460,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            serde_json::json!([
-                true,
-                "{\"ready\":true}",
-                true,
-                2,
-                true,
-                true,
-                "undefined"
-            ])
+            serde_json::json!([true, "{\"ready\":true}", true, 2, true, true, "undefined"])
         );
     }
 
@@ -5561,8 +5528,7 @@ mod tests {
         assert_eq!(
             result,
             serde_json::json!([
-                true, true, true, true, true, true, true, true, true, true, true, true,
-                true
+                true, true, true, true, true, true, true, true, true, true, true, true, true
             ])
         );
     }
@@ -6240,8 +6206,11 @@ mod tests {
             serde_json::json!(6.0),
             "the repeating timer must make one tick of progress per event-loop turn",
         );
-        rt.execute_script("clear-zero-interval", "clearInterval(globalThis.__zeroInterval)")
-            .unwrap();
+        rt.execute_script(
+            "clear-zero-interval",
+            "clearInterval(globalThis.__zeroInterval)",
+        )
+        .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -6282,8 +6251,11 @@ mod tests {
             delays[5].as_f64().unwrap() >= 2.0,
             "a timer nested from the sixth interval task must receive the four-millisecond clamp: {delays:?}",
         );
-        rt.execute_script("clear-top-interval", "clearInterval(globalThis.__topInterval)")
-            .unwrap();
+        rt.execute_script(
+            "clear-top-interval",
+            "clearInterval(globalThis.__topInterval)",
+        )
+        .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -6305,7 +6277,8 @@ mod tests {
         .unwrap();
 
         for _ in 0..8 {
-            if rt.evaluate("globalThis.__deepInterval !== undefined")
+            if rt
+                .evaluate("globalThis.__deepInterval !== undefined")
                 .unwrap()
                 == serde_json::json!(true)
             {
@@ -6403,9 +6376,7 @@ mod tests {
         .unwrap();
 
         let started = std::time::Instant::now();
-        rt.run_event_loop_until_quiescent(2_000, 150)
-            .await
-            .unwrap();
+        rt.run_event_loop_until_quiescent(2_000, 150).await.unwrap();
         let elapsed = started.elapsed();
 
         assert!(
@@ -6431,17 +6402,12 @@ mod tests {
         .unwrap();
 
         let started = std::time::Instant::now();
-        rt.run_event_loop_until_quiescent(2_000, 150)
-            .await
-            .unwrap();
+        rt.run_event_loop_until_quiescent(2_000, 150).await.unwrap();
         let elapsed = started.elapsed();
 
         assert!(
             elapsed >= std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS)
-                && elapsed
-                    < std::time::Duration::from_millis(
-                        SYNCHRONOUS_TASK_FLOOR_MS + 1_500,
-                    ),
+                && elapsed < std::time::Duration::from_millis(SYNCHRONOUS_TASK_FLOOR_MS + 1_500,),
             "one synchronous callback drain escaped the bounded task allowance: {elapsed:?}"
         );
         assert_eq!(
@@ -6536,8 +6502,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn quiescent_event_loop_allows_fetch_hydration_within_network_grace() {
-        let (mut rt, accepted) =
-            delayed_fetch_runtime(std::time::Duration::from_millis(700));
+        let (mut rt, accepted) = delayed_fetch_runtime(std::time::Duration::from_millis(700));
         rt.execute_script(
             "quiescent-fetch-hydration",
             "fetch('/hydrate').then(response => response.text()).then(text => {\
@@ -6547,9 +6512,7 @@ mod tests {
         .unwrap();
 
         let started = std::time::Instant::now();
-        rt.run_event_loop_until_quiescent(3_000, 150)
-            .await
-            .unwrap();
+        rt.run_event_loop_until_quiescent(3_000, 150).await.unwrap();
         let elapsed = started.elapsed();
 
         accepted
@@ -6580,9 +6543,7 @@ mod tests {
         .unwrap();
 
         let started = std::time::Instant::now();
-        rt.run_event_loop_until_quiescent(4_000, 150)
-            .await
-            .unwrap();
+        rt.run_event_loop_until_quiescent(4_000, 150).await.unwrap();
         let elapsed = started.elapsed();
 
         accepted
@@ -6613,9 +6574,7 @@ mod tests {
         .unwrap();
 
         let started = std::time::Instant::now();
-        rt.run_event_loop_until_quiescent(4_000, 150)
-            .await
-            .unwrap();
+        rt.run_event_loop_until_quiescent(4_000, 150).await.unwrap();
         let elapsed = started.elapsed();
 
         assert_eq!(
@@ -8881,10 +8840,12 @@ mod tests {
             Some(br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"/>"#.to_vec()),
         );
         let state = rt.state.borrow();
-        let prepared = state.prepared_render.as_ref().expect("retained style graph");
+        let prepared = state
+            .prepared_render
+            .as_ref()
+            .expect("retained style graph");
         assert_eq!(
-            prepared as *const obscura_render::PreparedRender as usize,
-            prepared_address,
+            prepared as *const obscura_render::PreparedRender as usize, prepared_address,
             "resource arrival waits for the next geometry flush"
         );
         assert_eq!(
@@ -8924,8 +8885,8 @@ mod tests {
             state
                 .prepared_render
                 .as_ref()
-                .expect("initial prepared render") as *const obscura_render::PreparedRender
-                as usize
+                .expect("initial prepared render")
+                as *const obscura_render::PreparedRender as usize
         };
 
         // Preserve already queued framework damage and coalesce repeated
@@ -8957,14 +8918,20 @@ mod tests {
                 state
                     .pending_style_mutations
                     .iter()
-                    .filter(|mutation| matches!(mutation, obscura_render::RetainedStyleMutation::Resource))
+                    .filter(|mutation| matches!(
+                        mutation,
+                        obscura_render::RetainedStyleMutation::Resource
+                    ))
                     .count(),
                 1,
             );
-            assert!(state.pending_style_mutations.iter().any(|mutation| matches!(
-                mutation,
-                obscura_render::RetainedStyleMutation::Attribute(_)
-            )));
+            assert!(state
+                .pending_style_mutations
+                .iter()
+                .any(|mutation| matches!(
+                    mutation,
+                    obscura_render::RetainedStyleMutation::Attribute(_)
+                )));
         }
 
         let after = rt
@@ -9452,23 +9419,52 @@ mod tests {
                 __animation.currentTime = 50;
             "#,
         ).unwrap();
-        assert_eq!(rt.evaluate("box.style.opacity").unwrap(), serde_json::json!(".2"));
-        assert_eq!(rt.evaluate("box.getAnimations()[0] === __animation").unwrap(), serde_json::json!(true));
-        assert_eq!(rt.evaluate("document.getAnimations()[0] === __animation").unwrap(), serde_json::json!(true));
-        assert_eq!(rt.evaluate("__animation.playState").unwrap(), serde_json::json!("paused"));
+        assert_eq!(
+            rt.evaluate("box.style.opacity").unwrap(),
+            serde_json::json!(".2")
+        );
+        assert_eq!(
+            rt.evaluate("box.getAnimations()[0] === __animation")
+                .unwrap(),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            rt.evaluate("document.getAnimations()[0] === __animation")
+                .unwrap(),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            rt.evaluate("__animation.playState").unwrap(),
+            serde_json::json!("paused")
+        );
         assert_eq!(
             rt.evaluate("!('easingBezier' in __animation.effect.getTiming()) && !('linearEasing' in __animation.effect.getComputedTiming())").unwrap(),
             serde_json::json!(true),
         );
         let opacity = rt.evaluate("getComputedStyle(box).opacity").unwrap();
         let opacity = opacity.as_str().unwrap().parse::<f32>().unwrap();
-        assert!((opacity - 0.6).abs() < 0.001, "midpoint opacity was {opacity}");
+        assert!(
+            (opacity - 0.6).abs() < 0.001,
+            "midpoint opacity was {opacity}"
+        );
 
         rt.execute_script("cancel", "__animation.cancel()").unwrap();
-        assert_eq!(rt.evaluate("box.style.opacity").unwrap(), serde_json::json!(".2"));
-        assert_eq!(rt.evaluate("getComputedStyle(box).opacity").unwrap(), serde_json::json!("0.2"));
-        assert_eq!(rt.evaluate("box.getAnimations().length").unwrap(), serde_json::json!(0.0));
-        assert_eq!(rt.evaluate("document.getAnimations().length").unwrap(), serde_json::json!(0.0));
+        assert_eq!(
+            rt.evaluate("box.style.opacity").unwrap(),
+            serde_json::json!(".2")
+        );
+        assert_eq!(
+            rt.evaluate("getComputedStyle(box).opacity").unwrap(),
+            serde_json::json!("0.2")
+        );
+        assert_eq!(
+            rt.evaluate("box.getAnimations().length").unwrap(),
+            serde_json::json!(0.0)
+        );
+        assert_eq!(
+            rt.evaluate("document.getAnimations().length").unwrap(),
+            serde_json::json!(0.0)
+        );
     }
 
     #[cfg(feature = "render")]
@@ -9491,9 +9487,18 @@ mod tests {
         rt.run_event_loop_bounded(20).await.unwrap();
         assert_eq!(rt.evaluate("__ready").unwrap(), serde_json::json!(true));
         assert_eq!(rt.evaluate("__finished").unwrap(), serde_json::json!(true));
-        assert_eq!(rt.evaluate("__finishEvent").unwrap(), serde_json::json!(true));
-        assert_eq!(rt.evaluate("__animation.playState").unwrap(), serde_json::json!("finished"));
-        assert_eq!(rt.evaluate("getComputedStyle(box).opacity").unwrap(), serde_json::json!("1"));
+        assert_eq!(
+            rt.evaluate("__finishEvent").unwrap(),
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            rt.evaluate("__animation.playState").unwrap(),
+            serde_json::json!("finished")
+        );
+        assert_eq!(
+            rt.evaluate("getComputedStyle(box).opacity").unwrap(),
+            serde_json::json!("1")
+        );
     }
 
     #[cfg(feature = "render")]
@@ -9538,9 +9543,11 @@ mod tests {
         rt.set_viewport(80.0, 60.0);
         rt.run_page_init();
 
-        assert!(rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
-            milliseconds: 100.0,
-        }));
+        assert!(
+            rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
+                milliseconds: 100.0,
+            })
+        );
         let first = rt
             .screenshot_prepared((80.0, 60.0), Some("http://example.test/page"))
             .expect("first static frame");
@@ -9549,9 +9556,11 @@ mod tests {
             state.prepared_render.as_ref().unwrap() as *const _ as usize
         };
 
-        assert!(rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
-            milliseconds: 250.0,
-        }));
+        assert!(
+            rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
+                milliseconds: 250.0,
+            })
+        );
         let second = rt
             .screenshot_prepared((80.0, 60.0), Some("http://example.test/page"))
             .expect("second static frame");
@@ -9646,9 +9655,7 @@ mod tests {
             );
             assert_eq!(
                 state.pending_style_mutations,
-                vec![obscura_render::RetainedStyleMutation::WaapiAnimation {
-                    node: box_node
-                }]
+                vec![obscura_render::RetainedStyleMutation::WaapiAnimation { node: box_node }]
             );
         }
         let initial = rt
@@ -9700,7 +9707,10 @@ mod tests {
             .unwrap()
             .as_f64()
             .unwrap();
-        assert!(animated_opacity > 0.9, "animated opacity={animated_opacity}");
+        assert!(
+            animated_opacity > 0.9,
+            "animated opacity={animated_opacity}"
+        );
 
         rt.evaluate("__cancelAnimation.cancel()").unwrap();
         assert!(
@@ -9729,9 +9739,11 @@ mod tests {
         rt.set_viewport(80.0, 60.0);
         rt.run_page_init();
 
-        assert!(rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
-            milliseconds: 150.0,
-        }));
+        assert!(
+            rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
+                milliseconds: 150.0,
+            })
+        );
         let completed = rt
             .screenshot_prepared((80.0, 60.0), Some("http://example.test/page"))
             .expect("completed animation frame");
@@ -9741,26 +9753,24 @@ mod tests {
             state.prepared_render.as_ref().unwrap() as *const _ as usize
         };
 
-        assert!(rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
-            milliseconds: 300.0,
-        }));
+        assert!(
+            rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
+                milliseconds: 300.0,
+            })
+        );
         let later = rt
             .screenshot_prepared((80.0, 60.0), Some("http://example.test/page"))
             .expect("later completed frame");
         assert_eq!(completed, later);
         assert_eq!(
-            rt.state
-                .borrow()
-                .prepared_render
-                .as_ref()
-                .unwrap() as *const _ as usize,
+            rt.state.borrow().prepared_render.as_ref().unwrap() as *const _ as usize,
             prepared_address,
             "a finite fill-forwards animation must not relayout after completion"
         );
 
-        assert!(rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
-            milliseconds: 0.0,
-        }));
+        assert!(
+            rt.set_animation_sample_time(obscura_render::AnimationSampleTime { milliseconds: 0.0 })
+        );
         assert!(
             rt.state.borrow().prepared_render.is_none(),
             "backward timeline seeks must invalidate the completed frame"
@@ -9803,9 +9813,11 @@ mod tests {
             let state = rt.state.borrow();
             state.prepared_render.as_ref().unwrap() as *const _ as usize
         };
-        assert!(rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
-            milliseconds: 5_000.0,
-        }));
+        assert!(
+            rt.set_animation_sample_time(obscura_render::AnimationSampleTime {
+                milliseconds: 5_000.0,
+            })
+        );
         let later = rt
             .screenshot_prepared((80.0, 60.0), Some("http://example.test/page"))
             .expect("later frame");
@@ -9855,13 +9867,18 @@ mod tests {
 
         rt.state.borrow_mut().animation_timeline_origin =
             std::time::Instant::now() - std::time::Duration::from_millis(1_000);
-        rt.evaluate("var box=document.getElementById('box');box.remove();document.body.appendChild(box)")
-            .unwrap();
+        rt.evaluate(
+            "var box=document.getElementById('box');box.remove();document.body.appendChild(box)",
+        )
+        .unwrap();
         assert!(rt.set_animation_sample(obscura_render::AnimationSample::document(1_100.0)));
         rt.screenshot_prepared((200.0, 80.0), Some("http://example.test/page"))
             .unwrap();
         let restarted = animation_test_width(&rt, "box");
-        assert!((5.0..20.0).contains(&restarted), "restarted width={restarted}");
+        assert!(
+            (5.0..20.0).contains(&restarted),
+            "restarted width={restarted}"
+        );
     }
 
     #[cfg(feature = "render")]
@@ -9977,7 +9994,10 @@ mod tests {
         let direct_rt = make_runtime();
         assert!(direct_rt.set_animation_sample(fixed));
         let direct = direct_rt
-            .screenshot_prepared((160.0, 100.0), Some("http://example.test/github-like-shell"))
+            .screenshot_prepared(
+                (160.0, 100.0),
+                Some("http://example.test/github-like-shell"),
+            )
             .expect("direct fixed-time capture");
 
         let mut geometry_rt = make_runtime();
@@ -9987,7 +10007,10 @@ mod tests {
         assert_eq!(rect["width"].as_f64(), Some(120.0));
         assert!(geometry_rt.set_animation_sample(fixed));
         let after_geometry = geometry_rt
-            .screenshot_prepared((160.0, 100.0), Some("http://example.test/github-like-shell"))
+            .screenshot_prepared(
+                (160.0, 100.0),
+                Some("http://example.test/github-like-shell"),
+            )
             .expect("fixed-time capture after geometry");
 
         assert_eq!(
@@ -10118,10 +10141,8 @@ mod tests {
         );
         assert!(rt.state.borrow().prepared_render.is_some());
 
-        rt.evaluate(
-            "document.getElementById('box').setAttributeNS(null, 'class', 'box')",
-        )
-        .unwrap();
+        rt.evaluate("document.getElementById('box').setAttributeNS(null, 'class', 'box')")
+            .unwrap();
         assert!(
             rt.state.borrow().prepared_render.is_some(),
             "an identical null-namespace attribute must retain layout"
@@ -10516,10 +10537,8 @@ mod tests {
             .unwrap();
         rt.run_event_loop_bounded(40).await.unwrap();
         assert_eq!(
-            rt.evaluate(
-                "__resizeRecords.map(record => [record.content[0], record.border[0]])"
-            )
-            .unwrap(),
+            rt.evaluate("__resizeRecords.map(record => [record.content[0], record.border[0]])")
+                .unwrap(),
             serde_json::json!([[102, 120], [122, 140]])
         );
         assert_eq!(
@@ -10843,7 +10862,8 @@ mod tests {
             .unwrap();
         rt.run_event_loop_bounded(40).await.unwrap();
         assert_eq!(
-            rt.evaluate("[__resizeCallbacks, __resizeLoopErrors]").unwrap(),
+            rt.evaluate("[__resizeCallbacks, __resizeLoopErrors]")
+                .unwrap(),
             serde_json::json!([2, 2])
         );
     }
@@ -11029,11 +11049,7 @@ mod tests {
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(
             rt.evaluate("__intersectionDeliveryOrder").unwrap(),
-            serde_json::json!([
-                "first-observer",
-                "second-observer",
-                "callback-posted-task",
-            ])
+            serde_json::json!(["first-observer", "second-observer", "callback-posted-task",])
         );
     }
 
@@ -11197,10 +11213,7 @@ mod tests {
         // clips it. Programmatic scrolling then reveals the complete box.
         assert_eq!(
             result.value.unwrap(),
-            serde_json::json!([
-                [false, 0, [0, 0, 0, 0]],
-                [true, 1, [10, 100, 100, 20]],
-            ])
+            serde_json::json!([[false, 0, [0, 0, 0, 0]], [true, 1, [10, 100, 100, 20]],])
         );
     }
 
@@ -12072,8 +12085,16 @@ mod tests {
             result,
             serde_json::json!([
                 [true, 0, true, true, 1, 2],
-                ["\"a;b\"", "url(\"data:image/svg+xml;utf8,<svg/>\")"], true,
-                73, 91, "91px", 11, 64, 2, "#box", true
+                ["\"a;b\"", "url(\"data:image/svg+xml;utf8,<svg/>\")"],
+                true,
+                73,
+                91,
+                "91px",
+                11,
+                64,
+                2,
+                "#box",
+                true
             ])
         );
     }
@@ -12113,8 +12134,15 @@ mod tests {
         assert_eq!(
             result,
             serde_json::json!([
-                1, 1, true,
-                ["\"a;b\"", "url(\"data:image/svg+xml;utf8,<svg/>\")", true, true],
+                1,
+                1,
+                true,
+                [
+                    "\"a;b\"",
+                    "url(\"data:image/svg+xml;utf8,<svg/>\")",
+                    true,
+                    true
+                ],
                 ""
             ])
         );
@@ -12442,7 +12470,10 @@ mod tests {
             green_half.alpha()
         );
         let clipped = pixmap.pixel(23, 8).expect("outside overflow clip");
-        assert_eq!((clipped.red(), clipped.green(), clipped.blue()), (0, 0, 255));
+        assert_eq!(
+            (clipped.red(), clipped.green(), clipped.blue()),
+            (0, 0, 255)
+        );
         let blank = pixmap.pixel(34, 8).expect("transparent blank canvas");
         assert_eq!((blank.red(), blank.green(), blank.blue()), (0, 0, 255));
         let overlay = pixmap.pixel(11, 8).expect("higher z-index overlay");
@@ -12457,12 +12488,9 @@ mod tests {
         );
         let padded_content = pixmap.pixel(36, 23).expect("padded canvas content pixel");
         assert!(
-            padded_content.red() > 220
-                && padded_content.green() < 40
-                && padded_content.blue() < 40,
+            padded_content.red() > 220 && padded_content.green() < 40 && padded_content.blue() < 40,
             "canvas bitmap must start at the CSS content-box origin"
         );
-
     }
 
     #[test]
@@ -13018,7 +13046,9 @@ mod tests {
 
         let base = format!("http://{address}");
         let mut rt = ObscuraJsRuntime::new();
-        rt.set_dom(parse_html(&format!(r#"<img id="image" src="{base}/plain.png">"#)));
+        rt.set_dom(parse_html(&format!(
+            r#"<img id="image" src="{base}/plain.png">"#
+        )));
         // Deliberately make the image cross-origin from the document.
         rt.set_url("http://127.0.0.1:1/page.html");
         rt.set_http_client(std::sync::Arc::new(
@@ -13047,8 +13077,11 @@ mod tests {
             serde_json::json!([true, 2, ["load"]])
         );
 
-        rt.execute_script("require-anonymous-cors", r#"image.crossOrigin = "anonymous";"#)
-            .unwrap();
+        rt.execute_script(
+            "require-anonymous-cors",
+            r#"image.crossOrigin = "anonymous";"#,
+        )
+        .unwrap();
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(
             rt.evaluate("[image.complete, image.naturalWidth, __profileEvents]")
@@ -13391,20 +13424,16 @@ mod tests {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let loader_calls = calls.clone();
         let png = two_by_three_png();
-        let mut rt = parser_image_runtime(
-            r#"<img id="late" src="late.png">"#,
-            move |_url: &str| {
+        let mut rt =
+            parser_image_runtime(r#"<img id="late" src="late.png">"#, move |_url: &str| {
                 loader_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 Some(png.clone())
-            },
-        );
+            });
         {
             let mut state = rt.state.borrow_mut();
             let previous = state.render_resources.set_sync_loading_enabled(false);
             assert!(ensure_prepared_render(&mut state).is_some());
-            state
-                .render_resources
-                .set_sync_loading_enabled(previous);
+            state.render_resources.set_sync_loading_enabled(previous);
             assert!(state.prepared_render.is_some());
         }
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
@@ -13420,10 +13449,8 @@ mod tests {
         .unwrap();
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(
-            rt.evaluate(
-                "[late.complete, late.naturalWidth, late.naturalHeight, __lateEvents]"
-            )
-            .unwrap(),
+            rt.evaluate("[late.complete, late.naturalWidth, late.naturalHeight, __lateEvents]")
+                .unwrap(),
             serde_json::json!([true, 2, 3, ["load"]])
         );
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -13443,11 +13470,8 @@ mod tests {
             assert!(ensure_prepared_render(&mut state).is_some());
             assert!(state.prepared_render.is_some());
         }
-        rt.execute_script(
-            "reload-retained-image",
-            r#"late.src = "late.png";"#,
-        )
-        .unwrap();
+        rt.execute_script("reload-retained-image", r#"late.src = "late.png";"#)
+            .unwrap();
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(rt.state.borrow().prepared_render.is_some());
@@ -13465,9 +13489,7 @@ mod tests {
             let mut state = missing.state.borrow_mut();
             let previous = state.render_resources.set_sync_loading_enabled(false);
             assert!(ensure_prepared_render(&mut state).is_some());
-            state
-                .render_resources
-                .set_sync_loading_enabled(previous);
+            state.render_resources.set_sync_loading_enabled(previous);
             assert!(state.prepared_render.is_some());
         }
         missing
@@ -13489,10 +13511,7 @@ mod tests {
                 .unwrap(),
             serde_json::json!([true, 0, 0, ["error"]])
         );
-        assert_eq!(
-            missing_calls.load(std::sync::atomic::Ordering::SeqCst),
-            1
-        );
+        assert_eq!(missing_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert!(missing.state.borrow().prepared_render.is_some());
     }
 
@@ -13533,10 +13552,8 @@ mod tests {
         .unwrap();
         rt.run_event_loop_bounded(100).await.unwrap();
         assert_eq!(
-            rt.evaluate(
-                "[__stableGetterResizeRecords, __obscura_nextPendingTimeoutDelay()]"
-            )
-            .unwrap(),
+            rt.evaluate("[__stableGetterResizeRecords, __obscura_nextPendingTimeoutDelay()]")
+                .unwrap(),
             serde_json::json!([1, -1])
         );
 
@@ -13555,10 +13572,8 @@ mod tests {
         // Cached lifecycle reads do not change intrinsic dimensions, so they
         // must not enqueue a rendering checkpoint (and its geometry walk).
         assert_eq!(
-            rt.evaluate(
-                "[__stableGetterResizeRecords, __obscura_nextPendingTimeoutDelay()]"
-            )
-            .unwrap(),
+            rt.evaluate("[__stableGetterResizeRecords, __obscura_nextPendingTimeoutDelay()]")
+                .unwrap(),
             serde_json::json!([1, -1])
         );
     }
@@ -14565,7 +14580,13 @@ mod tests {
         // the object id a success uses and nothing said which branch ran.
         let mut rt = setup_runtime("<html><body></body></html>");
         let info = rt
-            .call_function_on_for_cdp("() => Promise.reject(new Error('boom'))", None, &[], true, true)
+            .call_function_on_for_cdp(
+                "() => Promise.reject(new Error('boom'))",
+                None,
+                &[],
+                true,
+                true,
+            )
             .await
             .expect("a rejection is answered, not failed");
         assert!(info.thrown, "expected a thrown value, got {:?}", info.value);
@@ -14602,7 +14623,10 @@ mod tests {
             .evaluate_for_cdp("undefined_variable_xyz", false, false)
             .await
             .expect("a page error is not a protocol failure");
-        assert!(info.thrown, "a ReferenceError must come back flagged thrown");
+        assert!(
+            info.thrown,
+            "a ReferenceError must come back flagged thrown"
+        );
         assert_eq!(info.subtype.as_deref(), Some("error"));
         assert!(
             info.description.contains("ReferenceError"),
@@ -14610,7 +14634,7 @@ mod tests {
             info.description
         );
     }
-    
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_synchronous_throw_is_reported_when_a_value_was_asked_for() {
         // returnByValue took a different route entirely, through `evaluate`,
@@ -14624,7 +14648,7 @@ mod tests {
         assert!(info.thrown, "a ReferenceError must not serialize to null");
         assert!(info.description.contains("ReferenceError"));
     }
-    
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_throw_statement_is_run_as_a_script_not_wrapped_in_parentheses() {
         // `Runtime.evaluate` takes a script. Pasted into `(...)` a throw is a
@@ -14642,7 +14666,7 @@ mod tests {
             info.description
         );
     }
-    
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_statement_bundle_yields_its_completion_value() {
         // Chrome reports the completion value of the script. The old wrapper
@@ -14663,7 +14687,7 @@ mod tests {
             "the bundle's completion value, not the wrapper's undefined"
         );
     }
-    
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_trailing_semicolon_and_source_url_still_parse() {
         // Both were handled by hand before: the semicolon had to be trimmed or
@@ -14679,9 +14703,13 @@ mod tests {
             info.value.as_ref().and_then(serde_json::Value::as_f64),
             Some(7.0)
         );
-    
+
         let info = rt
-            .evaluate_for_cdp("(() => 8)()\n//# sourceURL=__puppeteer_evaluation_script__", true, false)
+            .evaluate_for_cdp(
+                "(() => 8)()\n//# sourceURL=__puppeteer_evaluation_script__",
+                true,
+                false,
+            )
             .await
             .expect("a trailing sourceURL comment is legal");
         assert_eq!(
@@ -14689,7 +14717,7 @@ mod tests {
             Some(8.0)
         );
     }
-    
+
     #[tokio::test(flavor = "current_thread")]
     async fn a_rejection_does_not_leak_into_the_next_call() {
         // `__obscura_await_rejected` is a global, so the success branch has to
@@ -14697,7 +14725,13 @@ mod tests {
         // call on the same runtime as thrown.
         let mut rt = setup_runtime("<html><body></body></html>");
         let rejected = rt
-            .call_function_on_for_cdp("() => Promise.reject(new Error('first'))", None, &[], true, true)
+            .call_function_on_for_cdp(
+                "() => Promise.reject(new Error('first'))",
+                None,
+                &[],
+                true,
+                true,
+            )
             .await
             .unwrap();
         assert!(rejected.thrown);
@@ -15407,9 +15441,7 @@ mod tests {
                 <a id="link" href="x.json"></a>
             </body></html>"#,
         );
-        let link = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
+        let link = rt.evaluate("document.getElementById('link').href").unwrap();
         assert_eq!(link.as_str().unwrap(), "http://example.com/a/x.json");
     }
 
@@ -15420,9 +15452,7 @@ mod tests {
                 <a id="link" href="x.json"></a>
             </body></html>"#,
         );
-        let link = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
+        let link = rt.evaluate("document.getElementById('link').href").unwrap();
         assert_eq!(link.as_str().unwrap(), "http://example.com/deep/x.json");
     }
 
@@ -15458,10 +15488,11 @@ mod tests {
         let base_uri = rt.evaluate("document.baseURI").unwrap();
         assert_eq!(base_uri.as_str().unwrap(), "http://example.com/deep/page");
 
-        let link = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
-        assert_eq!(link.as_str().unwrap(), "http://example.com/deep/data/x.json");
+        let link = rt.evaluate("document.getElementById('link').href").unwrap();
+        assert_eq!(
+            link.as_str().unwrap(),
+            "http://example.com/deep/data/x.json"
+        );
     }
 
     #[test]
@@ -15470,11 +15501,10 @@ mod tests {
         let mut rt = setup_runtime_at_deep_url(
             r#"<html><head></head><body><a id="link" href="x.json"></a></body></html>"#,
         );
-        rt.evaluate("history.pushState({}, '', '/other/route')").unwrap();
-
-        let link = rt
-            .evaluate("document.getElementById('link').href")
+        rt.evaluate("history.pushState({}, '', '/other/route')")
             .unwrap();
+
+        let link = rt.evaluate("document.getElementById('link').href").unwrap();
         assert_eq!(link.as_str().unwrap(), "http://example.com/other/x.json");
     }
 
@@ -15485,12 +15515,14 @@ mod tests {
                 <a id="link" href="x.json"></a>
             </body></html>"#,
         );
-        rt.evaluate("history.pushState({}, '', '/other/route')").unwrap();
-
-        let link = rt
-            .evaluate("document.getElementById('link').href")
+        rt.evaluate("history.pushState({}, '', '/other/route')")
             .unwrap();
-        assert_eq!(link.as_str().unwrap(), "http://example.com/other/assets/x.json");
+
+        let link = rt.evaluate("document.getElementById('link').href").unwrap();
+        assert_eq!(
+            link.as_str().unwrap(),
+            "http://example.com/other/assets/x.json"
+        );
     }
 
     /// Guards the cache in `document_base_url_memoized`. Without it, each of these reads walked
@@ -15527,9 +15559,7 @@ mod tests {
         let mut rt = setup_runtime_at_deep_url(
             r#"<html><head></head><body><a id="link" href="x.json"></a></body></html>"#,
         );
-        let before = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
+        let before = rt.evaluate("document.getElementById('link').href").unwrap();
         assert_eq!(before.as_str().unwrap(), "http://example.com/deep/x.json");
 
         rt.evaluate(
@@ -15541,27 +15571,27 @@ mod tests {
         )
         .unwrap();
 
-        let after = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
+        let after = rt.evaluate("document.getElementById('link').href").unwrap();
         assert_eq!(after.as_str().unwrap(), "http://example.com/x.json");
     }
 
     #[test]
     fn the_base_memo_notices_a_changed_href_attribute() {
         let mut rt = setup_runtime_at_deep_url(BASE_HREF_PAGE);
-        let before = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
-        assert_eq!(before.as_str().unwrap(), "http://example.com/app/data/x.json");
+        let before = rt.evaluate("document.getElementById('link').href").unwrap();
+        assert_eq!(
+            before.as_str().unwrap(),
+            "http://example.com/app/data/x.json"
+        );
 
         rt.evaluate("document.querySelector('base').setAttribute('href', '/other/')")
             .unwrap();
 
-        let after = rt
-            .evaluate("document.getElementById('link').href")
-            .unwrap();
-        assert_eq!(after.as_str().unwrap(), "http://example.com/other/data/x.json");
+        let after = rt.evaluate("document.getElementById('link').href").unwrap();
+        assert_eq!(
+            after.as_str().unwrap(),
+            "http://example.com/other/data/x.json"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -15601,8 +15631,14 @@ mod tests {
         // to fetch, so fetch takes over the resolution if it is removed from send, and the assert
         // still holds. It pins the result, not the layer.
         assert_eq!(seen.len(), 2, "one fetch, one XHR");
-        assert_eq!(seen[0].as_str().unwrap(), "http://example.com/app/data/x.json");
-        assert_eq!(seen[1].as_str().unwrap(), "http://example.com/app/data/y.json");
+        assert_eq!(
+            seen[0].as_str().unwrap(),
+            "http://example.com/app/data/x.json"
+        );
+        assert_eq!(
+            seen[1].as_str().unwrap(),
+            "http://example.com/app/data/y.json"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -16034,7 +16070,8 @@ mod tests {
                         "HTTP/1.1 {status} Redirect\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     )
                 } else {
-                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok".to_string()
+                    "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"
+                        .to_string()
                 };
                 let _ = stream.write_all(response.as_bytes());
             }
@@ -16054,9 +16091,8 @@ mod tests {
             let (mut stream, _) = target.accept().unwrap();
             let mut buffer = [0u8; 1024];
             let _ = stream.read(&mut buffer);
-            let _ = stream.write_all(
-                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
-            );
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
         });
 
         let source = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -16122,7 +16158,10 @@ mod tests {
 
         let value = result.value.unwrap();
         assert!(
-            value["url"].as_str().unwrap_or_default().ends_with("/hop/0"),
+            value["url"]
+                .as_str()
+                .unwrap_or_default()
+                .ends_with("/hop/0"),
             "Response.url did not report the final URL: {value}"
         );
         assert_eq!(value["redirected"], true);
@@ -16142,11 +16181,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stealth_fetch_response_reports_the_final_redirect_url() {
         let mut rt = redirect_chain_runtime(2);
-        rt.set_stealth_client(std::sync::Arc::new(
-            obscura_net::StealthHttpClient::new(std::sync::Arc::new(
-                obscura_net::CookieJar::new(),
-            )),
-        ));
+        rt.set_stealth_client(std::sync::Arc::new(obscura_net::StealthHttpClient::new(
+            std::sync::Arc::new(obscura_net::CookieJar::new()),
+        )));
         let result = rt
             .call_function_on_for_cdp(
                 r#"async () => {
@@ -16162,7 +16199,10 @@ mod tests {
             .unwrap();
 
         let value = result.value.unwrap();
-        assert!(value["url"].as_str().unwrap_or_default().ends_with("/hop/0"));
+        assert!(value["url"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/hop/0"));
         assert_eq!(value["redirected"], true);
     }
 
@@ -16186,14 +16226,12 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(
-            result
-                .value
-                .unwrap()
-                .as_str()
-                .unwrap_or_default()
-                .ends_with("/hop/0")
-        );
+        assert!(result
+            .value
+            .unwrap()
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/hop/0"));
     }
 
     async fn assert_post_redirect_method(status: u16, expected_method: &str) {
@@ -16233,7 +16271,10 @@ mod tests {
             .await
             .unwrap();
         let value = result.value.unwrap();
-        assert!(value["url"].as_str().unwrap_or_default().ends_with("/final"));
+        assert!(value["url"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/final"));
         assert_eq!(value["redirected"], true);
         assert_eq!(
             *request_callbacks.lock().unwrap(),
@@ -16285,7 +16326,10 @@ mod tests {
             .unwrap();
         let value = result.value.unwrap();
         assert_eq!(value["type"], "basic");
-        assert!(value["url"].as_str().unwrap_or_default().ends_with("/hop/0"));
+        assert!(value["url"]
+            .as_str()
+            .unwrap_or_default()
+            .ends_with("/hop/0"));
         assert_eq!(value["redirected"], true);
     }
 
@@ -16315,11 +16359,9 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn stealth_cross_origin_no_cors_filters_response_identity() {
         let mut rt = cross_origin_redirect_runtime();
-        rt.set_stealth_client(std::sync::Arc::new(
-            obscura_net::StealthHttpClient::new(std::sync::Arc::new(
-                obscura_net::CookieJar::new(),
-            )),
-        ));
+        rt.set_stealth_client(std::sync::Arc::new(obscura_net::StealthHttpClient::new(
+            std::sync::Arc::new(obscura_net::CookieJar::new()),
+        )));
         let result = rt
             .call_function_on_for_cdp(
                 r#"async () => {
@@ -17059,9 +17101,7 @@ mod tests {
                     .and_then(|line| line.split_ascii_whitespace().nth(1))
                     .unwrap_or("/");
                 let body = match path {
-                    "/entry.js" => {
-                        "import './shared.js'; globalThis.__module_entry_ran = true;"
-                    }
+                    "/entry.js" => "import './shared.js'; globalThis.__module_entry_ran = true;",
                     "/shared.js" => {
                         "globalThis.__shared_module_runs = \
                          (globalThis.__shared_module_runs || 0) + 1;"
@@ -17280,7 +17320,8 @@ mod tests {
         rt.evaluate_prepared_module(shared, 1_000).await.unwrap();
 
         assert_eq!(
-            rt.evaluate("globalThis.__module_entry_ran === true").unwrap(),
+            rt.evaluate("globalThis.__module_entry_ran === true")
+                .unwrap(),
             serde_json::json!(true),
         );
         assert_eq!(
@@ -17306,7 +17347,8 @@ mod tests {
                 "unexpected heap failure: {error}",
             );
             assert_eq!(
-                rt.evaluate("globalThis.__runtime_survived_oom = true").unwrap(),
+                rt.evaluate("globalThis.__runtime_survived_oom = true")
+                    .unwrap(),
                 serde_json::json!(true),
             );
         }
@@ -17452,7 +17494,10 @@ mod tests {
             .collect::<Vec<_>>();
         for request in &requests {
             let lower = request.to_ascii_lowercase();
-            assert!(lower.contains("\r\norigin: http://127.0.0.1:1\r\n"), "{request}");
+            assert!(
+                lower.contains("\r\norigin: http://127.0.0.1:1\r\n"),
+                "{request}"
+            );
             assert!(!lower.contains("\r\ncookie:"), "{request}");
         }
         let child = requests
@@ -18670,9 +18715,7 @@ mod tests {
         std::env::set_var("LANG", "de-DE");
         let mut rt = setup_runtime("<html><body></body></html>");
         let result = rt
-            .evaluate(
-                "Intl.DateTimeFormat().resolvedOptions().locale + '|' + navigator.language",
-            )
+            .evaluate("Intl.DateTimeFormat().resolvedOptions().locale + '|' + navigator.language")
             .unwrap();
         assert_eq!(
             result,

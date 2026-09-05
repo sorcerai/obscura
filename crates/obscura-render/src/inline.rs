@@ -798,7 +798,10 @@ struct ReplacedItem {
 
 impl ReplacedItem {
     fn from_style(width: f32, height: f32, style: &LayoutStyle) -> Self {
-        Self::from_intrinsic(crate::ReplacedIntrinsic::from_dimensions(width, height), style)
+        Self::from_intrinsic(
+            crate::ReplacedIntrinsic::from_dimensions(width, height),
+            style,
+        )
     }
 
     fn from_intrinsic(intrinsic: crate::ReplacedIntrinsic, style: &LayoutStyle) -> Self {
@@ -1595,11 +1598,9 @@ impl TextEngine {
                 && replaced.preferred_width.is_none()
                 && replaced.preferred_height.is_none()
                 && known.width.is_none())
-            .then(|| {
-                match available.width {
-                    taffy::AvailableSpace::Definite(width) => Some(width.max(0.0)),
-                    _ => replaced.ratio_only_available_width,
-                }
+            .then(|| match available.width {
+                taffy::AvailableSpace::Definite(width) => Some(width.max(0.0)),
+                _ => replaced.ratio_only_available_width,
             })
             .flatten();
             let mut size = replaced.size(taffy::Size {
@@ -3141,13 +3142,7 @@ impl TextEngine {
             return;
         };
         let clip = clip_override.or(item.clip);
-        if !inline_item_may_intersect_surface(
-            item,
-            offset,
-            clip,
-            pixmap.height(),
-            raster_scale,
-        ) {
+        if !inline_item_may_intersect_surface(item, offset, clip, pixmap.height(), raster_scale) {
             return;
         }
         let (ox, oy) = (
@@ -3571,13 +3566,7 @@ mod tests {
 
         engine.items[item].origin.1 = -60.0;
         assert!(
-            inline_item_may_intersect_surface(
-                &engine.items[item],
-                (0.0, 0.0),
-                None,
-                100,
-                1.0,
-            ),
+            inline_item_may_intersect_surface(&engine.items[item], (0.0, 0.0), None, 100, 1.0,),
             "the four-em ink guard must preserve unusual glyph overhang"
         );
         engine.items[item].origin.1 = -500.0;
@@ -3597,13 +3586,7 @@ mod tests {
             1.0,
         ));
         assert!(
-            inline_item_may_intersect_surface(
-                &engine.items[item],
-                (0.0, -490.0),
-                None,
-                100,
-                1.0,
-            ),
+            inline_item_may_intersect_surface(&engine.items[item], (0.0, -490.0), None, 100, 1.0,),
             "the transform/layer translation must be applied before culling"
         );
 
@@ -3615,13 +3598,7 @@ mod tests {
                 offset: (0.0, -490.0),
             });
         assert!(
-            inline_item_may_intersect_surface(
-                &engine.items[item],
-                (0.0, 0.0),
-                None,
-                100,
-                1.0,
-            ),
+            inline_item_may_intersect_surface(&engine.items[item], (0.0, 0.0), None, 100, 1.0,),
             "a relatively positioned inline may move visible ink into the surface"
         );
         assert!(!inline_item_may_intersect_surface(
@@ -3867,9 +3844,7 @@ mod tests {
             height: None,
         };
         let measure =
-            |style: &LayoutStyle| {
-                ReplacedItem::from_style(512.0, 323.0, style).size(unknown)
-            };
+            |style: &LayoutStyle| ReplacedItem::from_style(512.0, 323.0, style).size(unknown);
 
         let max_height = LayoutStyle {
             max_height: Dimension::Px(128.0),

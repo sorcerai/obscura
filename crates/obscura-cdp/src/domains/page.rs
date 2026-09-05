@@ -483,9 +483,9 @@ fn encode_long_full_page_png(
         .write_header()
         .map_err(|error| format!("Page.captureScreenshot striped PNG header failed: {error}"))?;
     {
-        let mut stream = writer
-            .stream_writer_with_size(64 * 1024)
-            .map_err(|error| format!("Page.captureScreenshot striped PNG stream failed: {error}"))?;
+        let mut stream = writer.stream_writer_with_size(64 * 1024).map_err(|error| {
+            format!("Page.captureScreenshot striped PNG stream failed: {error}")
+        })?;
         let mut output_y = 0u32;
         while output_y < output_height {
             let next_output_y = output_y
@@ -528,14 +528,14 @@ fn encode_long_full_page_png(
                     strip.dimensions()
                 ));
             }
-            stream
-                .write_all(strip.as_raw())
-                .map_err(|error| format!("Page.captureScreenshot striped PNG write failed: {error}"))?;
+            stream.write_all(strip.as_raw()).map_err(|error| {
+                format!("Page.captureScreenshot striped PNG write failed: {error}")
+            })?;
             output_y = next_output_y;
         }
-        stream
-            .finish()
-            .map_err(|error| format!("Page.captureScreenshot striped PNG finish failed: {error}"))?;
+        stream.finish().map_err(|error| {
+            format!("Page.captureScreenshot striped PNG finish failed: {error}")
+        })?;
     }
     writer
         .finish()
@@ -550,9 +550,7 @@ fn encode_long_full_page_png(
 /// Retain the old environment variable only as an explicit diagnostic escape
 /// hatch for callers investigating a slow or missing asset.
 #[cfg(feature = "render")]
-pub(crate) async fn prepare_capture_resources_if_requested(
-    page: &mut obscura_browser::Page,
-) {
+pub(crate) async fn prepare_capture_resources_if_requested(page: &mut obscura_browser::Page) {
     let Some(deadline_ms) = std::env::var("OBSCURA_RENDER_RESOURCE_DEADLINE_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -806,7 +804,10 @@ pub(crate) async fn pump_screencast_frames(ctx: &mut CdpContext) {
             continue;
         }
         if let Err(error) = queue_screencast_frame(ctx, &attached_session, false) {
-            tracing::warn!(cdp_session_id, "could not produce autonomous screencast frame: {error}");
+            tracing::warn!(
+                cdp_session_id,
+                "could not produce autonomous screencast frame: {error}"
+            );
         }
     }
 }
@@ -1269,14 +1270,46 @@ pub async fn handle(
                 // drop the whole connection (#833).
                 let frame = frame_value(&frame_id, None, &loader_id, &url, "text/html");
                 let events = vec![
-                    CdpEvent { method: "Page.frameNavigated".into(), params: json!({"frame": frame, "type": "Navigation"}), session_id: es.clone() },
-                    CdpEvent { method: "Page.lifecycleEvent".into(), params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "commit", "timestamp": ts}), session_id: es.clone() },
-                    CdpEvent { method: "Page.lifecycleEvent".into(), params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "DOMContentLoaded", "timestamp": ts}), session_id: es.clone() },
-                    CdpEvent { method: "Page.domContentEventFired".into(), params: json!({"timestamp": ts}), session_id: es.clone() },
-                    CdpEvent { method: "Page.lifecycleEvent".into(), params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "load", "timestamp": ts}), session_id: es.clone() },
-                    CdpEvent { method: "Page.loadEventFired".into(), params: json!({"timestamp": ts}), session_id: es.clone() },
-                    CdpEvent { method: "Page.lifecycleEvent".into(), params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "networkIdle", "timestamp": ts}), session_id: es.clone() },
-                    CdpEvent { method: "Page.frameStoppedLoading".into(), params: json!({"frameId": frame_id, "timestamp": ts}), session_id: es },
+                    CdpEvent {
+                        method: "Page.frameNavigated".into(),
+                        params: json!({"frame": frame, "type": "Navigation"}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.lifecycleEvent".into(),
+                        params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "commit", "timestamp": ts}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.lifecycleEvent".into(),
+                        params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "DOMContentLoaded", "timestamp": ts}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.domContentEventFired".into(),
+                        params: json!({"timestamp": ts}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.lifecycleEvent".into(),
+                        params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "load", "timestamp": ts}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.loadEventFired".into(),
+                        params: json!({"timestamp": ts}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.lifecycleEvent".into(),
+                        params: json!({"frameId": frame_id, "loaderId": loader_id, "name": "networkIdle", "timestamp": ts}),
+                        session_id: es.clone(),
+                    },
+                    CdpEvent {
+                        method: "Page.frameStoppedLoading".into(),
+                        params: json!({"frameId": frame_id, "timestamp": ts}),
+                        session_id: es,
+                    },
                 ];
                 ctx.pending_events.extend(events);
             }
@@ -1316,15 +1349,17 @@ pub async fn handle(
                     .get_session_page(session_id)
                     .ok_or("No page for session")?;
                 let frame_id = params
-                        .get("frameId")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(&page.frame_id)
-                        .to_string();
+                    .get("frameId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&page.frame_id)
+                    .to_string();
                 let (origin, persist) = if frame_id == page.frame_id {
                     (page.url_string(), true)
-                } else if let Some(frame) = page.frames.iter().find(|frame| {
-                    child_frame_id(&page.frame_id, frame.frame_id()) == frame_id
-                }) {
+                } else if let Some(frame) = page
+                    .frames
+                    .iter()
+                    .find(|frame| child_frame_id(&page.frame_id, frame.frame_id()) == frame_id)
+                {
                     (frame.url().to_string(), false)
                 } else {
                     return Err(format!("No frame with given id found: {frame_id}"));
@@ -1352,9 +1387,11 @@ pub async fn handle(
             );
             if created {
                 for runtime_session in ctx.runtime_sessions_for_page(&page_id) {
-                    ctx.pending_events.push(super::runtime::execution_context_created_event(
-                        &context, Some(runtime_session),
-                    ));
+                    ctx.pending_events
+                        .push(super::runtime::execution_context_created_event(
+                            &context,
+                            Some(runtime_session),
+                        ));
                 }
             }
 
@@ -1657,48 +1694,49 @@ pub async fn handle(
                     None
                 };
 
-                let (png, png_is_final_encoding) = match region {
-                    Some(region) => match page
-                        .screenshot_region_with_animation_sample(region, animation_sample)
-                    {
-                        Ok(png) => (png, false),
-                        Err(obscura_browser::CaptureError::AllocationLimitExceeded)
-                            if options.format == ScreenshotFormat::Png
-                                && options.clip.is_none()
-                                && options.capture_beyond_viewport =>
+                let (png, png_is_final_encoding) =
+                    match region {
+                        Some(region) => match page
+                            .screenshot_region_with_animation_sample(region, animation_sample)
                         {
-                            (
-                                encode_long_full_page_png(
-                                    page,
-                                    full_page_size
-                                        .expect("full-page route has retained dimensions"),
-                                    page.device_scale_factor,
-                                    animation_sample,
-                                    options.optimize_for_speed,
-                                )?,
-                                true,
+                            Ok(png) => (png, false),
+                            Err(obscura_browser::CaptureError::AllocationLimitExceeded)
+                                if options.format == ScreenshotFormat::Png
+                                    && options.clip.is_none()
+                                    && options.capture_beyond_viewport =>
+                            {
+                                (
+                                    encode_long_full_page_png(
+                                        page,
+                                        full_page_size
+                                            .expect("full-page route has retained dimensions"),
+                                        page.device_scale_factor,
+                                        animation_sample,
+                                        options.optimize_for_speed,
+                                    )?,
+                                    true,
+                                )
+                            }
+                            Err(error) => return Err(capture_error_message(error)),
+                        },
+                        None => {
+                            obscura_browser::validate_capture_region(
+                                obscura_browser::CaptureRegion::new(
+                                    scroll.0 as f32,
+                                    scroll.1 as f32,
+                                    viewport.0,
+                                    viewport.1,
+                                    1.0,
+                                ),
                             )
-                        }
-                        Err(error) => return Err(capture_error_message(error)),
-                    },
-                    None => {
-                        obscura_browser::validate_capture_region(
-                            obscura_browser::CaptureRegion::new(
-                                scroll.0 as f32,
-                                scroll.1 as f32,
-                                viewport.0,
-                                viewport.1,
-                                1.0,
-                            ),
-                        )
-                        .map_err(capture_error_message)?;
-                        (page.screenshot_with_animation_sample(viewport, animation_sample)
+                            .map_err(capture_error_message)?;
+                            (page.screenshot_with_animation_sample(viewport, animation_sample)
                             .ok_or_else(|| {
                                 "Page.captureScreenshot failed: the page has no DOM to render"
                                     .to_string()
                             })?, false)
-                    }
-                };
+                        }
+                    };
 
                 // Keep the common path allocation-free and byte-for-byte
                 // compatible with the renderer's native PNG encoder.
@@ -1780,7 +1818,13 @@ mod tests {
             .find(|e| e.method == "Page.frameNavigated")
             .expect("frameNavigated present");
         let frame = &frame_navigated.params["frame"];
-        for field in ["id", "loaderId", "url", "secureContextType", "crossOriginIsolatedContextType"] {
+        for field in [
+            "id",
+            "loaderId",
+            "url",
+            "secureContextType",
+            "crossOriginIsolatedContextType",
+        ] {
             assert!(
                 !frame[field].is_null(),
                 "frameNavigated frame must carry {field}: {frame}"
@@ -1975,9 +2019,7 @@ mod tests {
     }
 
     #[cfg(feature = "render")]
-    async fn transparent_surface_fixture(
-        height: u32,
-    ) -> (CdpContext, Option<String>) {
+    async fn transparent_surface_fixture(height: u32) -> (CdpContext, Option<String>) {
         let mut ctx = CdpContext::new();
         let page_id = ctx.create_page();
         let session_id = format!("{page_id}-session");
@@ -2174,9 +2216,7 @@ mod tests {
                 .expect("off-viewport clip with default false"),
             );
             assert_eq!(raster.dimensions(), (20, 20));
-            assert!(raster
-                .pixels()
-                .all(|pixel| pixel.0 == [7, 19, 31, 255]));
+            assert!(raster.pixels().all(|pixel| pixel.0 == [7, 19, 31, 255]));
         }
 
         ctx.get_session_page_mut(&session)
@@ -2494,7 +2534,8 @@ mod tests {
                         let mut request = [0u8; 2048];
                         let _ = stream.read(&mut request);
                         observed.fetch_add(1, Ordering::SeqCst);
-                        let body = br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#;
+                        let body =
+                            br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#;
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: image/svg+xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                             body.len()
@@ -2510,16 +2551,15 @@ mod tests {
             }
         });
 
-        let context = std::sync::Arc::new(
-            obscura_browser::BrowserContext::with_storage_and_network(
+        let context =
+            std::sync::Arc::new(obscura_browser::BrowserContext::with_storage_and_network(
                 "capture-without-warmup".to_string(),
                 None,
                 false,
                 None,
                 None,
                 true,
-            ),
-        );
+            ));
         let mut ctx = CdpContext::new_with_shared_context(context);
         let page_id = ctx.create_page();
         let session_id = format!("{page_id}-session");

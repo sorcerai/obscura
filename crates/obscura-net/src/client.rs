@@ -1,15 +1,17 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, OnceLock};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
+#[cfg(not(test))]
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
 use reqwest::redirect::Policy;
 use reqwest::{Client, Method};
-use tokio::sync::{RwLock, watch};
+use tokio::sync::{watch, RwLock};
 use url::Url;
 
 use crate::cookies::CookieJar;
@@ -34,31 +36,38 @@ fn configured_root_paths() -> Vec<std::path::PathBuf> {
     paths
 }
 
+fn load_root_certificates() -> Vec<reqwest::Certificate> {
+    let mut certificates = Vec::new();
+    for path in configured_root_paths() {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "failed to read CA certificate file");
+                continue;
+            }
+        };
+        match reqwest::Certificate::from_pem_bundle(&bytes) {
+            Ok(mut bundle) if !bundle.is_empty() => certificates.append(&mut bundle),
+            _ => match reqwest::Certificate::from_der(&bytes) {
+                Ok(certificate) => certificates.push(certificate),
+                Err(error) => {
+                    tracing::warn!(%error, path = %path.display(), "failed to parse CA certificate file");
+                }
+            },
+        }
+    }
+    certificates
+}
+
+#[cfg(not(test))]
 fn configured_root_certificates() -> &'static [reqwest::Certificate] {
     static ROOTS: OnceLock<Vec<reqwest::Certificate>> = OnceLock::new();
+    ROOTS.get_or_init(load_root_certificates)
+}
 
-    ROOTS.get_or_init(|| {
-        let mut certificates = Vec::new();
-        for path in configured_root_paths() {
-            let bytes = match std::fs::read(&path) {
-                Ok(bytes) => bytes,
-                Err(error) => {
-                    tracing::warn!(%error, path = %path.display(), "failed to read CA certificate file");
-                    continue;
-                }
-            };
-            match reqwest::Certificate::from_pem_bundle(&bytes) {
-                Ok(mut bundle) if !bundle.is_empty() => certificates.append(&mut bundle),
-                _ => match reqwest::Certificate::from_der(&bytes) {
-                    Ok(certificate) => certificates.push(certificate),
-                    Err(error) => {
-                        tracing::warn!(%error, path = %path.display(), "failed to parse CA certificate file");
-                    }
-                },
-            }
-        }
-        certificates
-    })
+#[cfg(test)]
+fn configured_root_certificates() -> &'static [reqwest::Certificate] {
+    Box::leak(load_root_certificates().into_boxed_slice())
 }
 
 /// Whether SSL_CERT_FILE / SSL_CERT_DIR request a custom TLS trust store. A
@@ -338,11 +347,7 @@ pub(crate) fn serialized_request_origin(
         .unwrap_or_else(|| "null".to_string())
 }
 
-pub(crate) fn redirect_taints_origin(
-    request: &ResourceRequest,
-    current: &Url,
-    next: &Url,
-) -> bool {
+pub(crate) fn redirect_taints_origin(request: &ResourceRequest, current: &Url, next: &Url) -> bool {
     current.origin() != next.origin()
         && request
             .initiator
@@ -389,9 +394,7 @@ pub(crate) fn validate_cors_response(
             target, allow_origin, serialized_origin
         )));
     }
-    if request.credentials == RequestCredentials::Include
-        && allow_credentials != Some("true")
-    {
+    if request.credentials == RequestCredentials::Include && allow_credentials != Some("true") {
         return Err(ObscuraNetError::Cors(format!(
             "credentialed response from {} requires Access-Control-Allow-Credentials: true",
             target
@@ -422,10 +425,7 @@ pub(crate) fn request_fetch_site(request: &ResourceRequest, target: &Url) -> &'s
 }
 
 pub(crate) fn request_referrer(request: &ResourceRequest, target: &Url) -> Option<String> {
-    let source = request
-        .referrer
-        .as_ref()
-        .or(request.initiator.as_ref())?;
+    let source = request.referrer.as_ref().or(request.initiator.as_ref())?;
     if !matches!(source.scheme(), "http" | "https")
         || !matches!(target.scheme(), "http" | "https")
         || (source.scheme() == "https" && target.scheme() == "http")
@@ -624,13 +624,7 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
             // IPv4/IPv6 translation prefix (RFC 6052). Only /96 has a fixed
             // embedded-address position; the local-use /48 is therefore
             // blocked outright below.
-            if s[0] == 0x64
-                && s[1] == 0xff9b
-                && s[2] == 0
-                && s[3] == 0
-                && s[4] == 0
-                && s[5] == 0
-            {
+            if s[0] == 0x64 && s[1] == 0xff9b && s[2] == 0 && s[3] == 0 && s[4] == 0 && s[5] == 0 {
                 return is_forbidden_ip(IpAddr::V4(Ipv4Addr::new(
                     (s[6] >> 8) as u8,
                     s[6] as u8,
@@ -703,6 +697,251 @@ impl Resolve for SsrfGuardResolver {
     }
 }
 
+/// A network/port entry for SSRF allowlisting (e.g. Tailscale mesh).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllowNet {
+    pub addr: IpAddr,
+    pub prefix: u8,
+    pub port: Option<u16>,
+}
+
+impl AllowNet {
+    pub fn parse(s: &str) -> Result<Self, String> {
+        let s = s.trim();
+        if s.is_empty() {
+            return Err("allow-net entry cannot be empty".to_string());
+        }
+
+        if s.starts_with('[') {
+            let close = s
+                .find(']')
+                .ok_or_else(|| "missing closing bracket ']' for IPv6 address".to_string())?;
+            let ip_str = &s[1..close];
+            let ip: IpAddr = ip_str
+                .parse::<Ipv6Addr>()
+                .map(IpAddr::V6)
+                .map_err(|e| format!("invalid IPv6 address '{}': {}", ip_str, e))?;
+            let rest = &s[close + 1..];
+
+            let (prefix, port) = if rest.is_empty() {
+                (128, None)
+            } else if let Some(stripped) = rest.strip_prefix('/') {
+                if let Some((pfx_str, port_str)) = stripped.split_once(':') {
+                    let pfx: u8 = pfx_str
+                        .parse()
+                        .map_err(|e| format!("invalid prefix '{}': {}", pfx_str, e))?;
+                    let port: u16 = port_str
+                        .parse()
+                        .map_err(|e| format!("invalid port '{}': {}", port_str, e))?;
+                    (pfx, Some(port))
+                } else {
+                    let pfx: u8 = stripped
+                        .parse()
+                        .map_err(|e| format!("invalid prefix '{}': {}", stripped, e))?;
+                    (pfx, None)
+                }
+            } else if let Some(stripped) = rest.strip_prefix(':') {
+                let port: u16 = stripped
+                    .parse()
+                    .map_err(|e| format!("invalid port '{}': {}", stripped, e))?;
+                (128, Some(port))
+            } else {
+                return Err(format!(
+                    "unexpected characters after IPv6 address: '{}'",
+                    rest
+                ));
+            };
+
+            if prefix > 128 {
+                return Err(format!("IPv6 prefix /{} exceeds maximum /128", prefix));
+            }
+
+            Ok(AllowNet {
+                addr: ip,
+                prefix,
+                port,
+            })
+        } else if let Some((ip_str, rest)) = s.split_once('/') {
+            let ip: IpAddr = ip_str
+                .parse()
+                .map_err(|e| format!("invalid IP address '{}': {}", ip_str, e))?;
+            let (prefix_str, port_str) = match rest.split_once(':') {
+                Some((p, pt)) => (p, Some(pt)),
+                None => (rest, None),
+            };
+            let prefix: u8 = prefix_str
+                .parse()
+                .map_err(|e| format!("invalid prefix '{}': {}", prefix_str, e))?;
+            let port = match port_str {
+                Some(pt) => Some(
+                    pt.parse::<u16>()
+                        .map_err(|e| format!("invalid port '{}': {}", pt, e))?,
+                ),
+                None => None,
+            };
+
+            match ip {
+                IpAddr::V4(_) => {
+                    if prefix > 32 {
+                        return Err(format!("IPv4 prefix /{} exceeds maximum /32", prefix));
+                    }
+                }
+                IpAddr::V6(_) => {
+                    if prefix > 128 {
+                        return Err(format!("IPv6 prefix /{} exceeds maximum /128", prefix));
+                    }
+                }
+            }
+
+            Ok(AllowNet {
+                addr: ip,
+                prefix,
+                port,
+            })
+        } else {
+            if let Ok(ip) = s.parse::<IpAddr>() {
+                let prefix = match ip {
+                    IpAddr::V4(_) => 32,
+                    IpAddr::V6(_) => 128,
+                };
+                return Ok(AllowNet {
+                    addr: ip,
+                    prefix,
+                    port: None,
+                });
+            }
+            if let Some((ip_str, port_str)) = s.split_once(':') {
+                if let Ok(ip) = ip_str.parse::<Ipv4Addr>() {
+                    let port: u16 = port_str
+                        .parse()
+                        .map_err(|e| format!("invalid port '{}': {}", port_str, e))?;
+                    return Ok(AllowNet {
+                        addr: IpAddr::V4(ip),
+                        prefix: 32,
+                        port: Some(port),
+                    });
+                }
+            }
+            Err(format!("invalid allow-net specification '{}'", s))
+        }
+    }
+
+    pub fn contains(&self, ip: IpAddr, port: u16) -> bool {
+        if let Some(p) = self.port {
+            if p != port {
+                return false;
+            }
+        }
+
+        match (self.addr, ip) {
+            (IpAddr::V4(net_v4), IpAddr::V4(target_v4)) => {
+                let net = u32::from(net_v4);
+                let target = u32::from(target_v4);
+                if self.prefix == 0 {
+                    true
+                } else if self.prefix >= 32 {
+                    net == target
+                } else {
+                    let mask = !0u32 << (32 - self.prefix);
+                    (net & mask) == (target & mask)
+                }
+            }
+            (IpAddr::V6(net_v6), IpAddr::V6(target_v6)) => {
+                let net = u128::from(net_v6);
+                let target = u128::from(target_v6);
+                if self.prefix == 0 {
+                    true
+                } else if self.prefix >= 128 {
+                    net == target
+                } else {
+                    let mask = !0u128 << (128 - self.prefix);
+                    (net & mask) == (target & mask)
+                }
+            }
+            (IpAddr::V4(net_v4), IpAddr::V6(target_v6)) => {
+                if let Some(target_v4) = target_v6.to_ipv4_mapped().or_else(|| target_v6.to_ipv4())
+                {
+                    let net = u32::from(net_v4);
+                    let target = u32::from(target_v4);
+                    if self.prefix == 0 {
+                        true
+                    } else if self.prefix >= 32 {
+                        net == target
+                    } else {
+                        let mask = !0u32 << (32 - self.prefix);
+                        (net & mask) == (target & mask)
+                    }
+                } else {
+                    false
+                }
+            }
+            (IpAddr::V6(net_v6), IpAddr::V4(target_v4)) => {
+                if let Some(net_v4) = net_v6.to_ipv4_mapped().or_else(|| net_v6.to_ipv4()) {
+                    let pfx = self.prefix.saturating_sub(96);
+                    let net = u32::from(net_v4);
+                    let target = u32::from(target_v4);
+                    if pfx == 0 {
+                        true
+                    } else if pfx >= 32 {
+                        net == target
+                    } else {
+                        let mask = !0u32 << (32 - pfx);
+                        (net & mask) == (target & mask)
+                    }
+                } else {
+                    false
+                }
+            }
+        }
+    }
+}
+
+/// Cloud metadata endpoints that NO allowlist may EVER unblock:
+/// - 169.254.169.254 (AWS/GCP/Azure IMDS)
+/// - 100.100.100.200 (Alibaba IMDS)
+/// - 169.254.170.2 (AWS ECS)
+/// - fd00:ec2::254 (AWS IMDSv6)
+pub const HARD_DENY: &[IpAddr] = &[
+    IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+    IpAddr::V4(Ipv4Addr::new(100, 100, 100, 200)),
+    IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2)),
+    IpAddr::V6(Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)),
+];
+
+/// Reads `OBSCURA_ALLOW_NET` env var (comma-separated list of entries).
+pub fn allow_net_from_env() -> Vec<AllowNet> {
+    let var = match std::env::var("OBSCURA_ALLOW_NET") {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    var.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|entry| match AllowNet::parse(entry) {
+            Ok(net) => Some(net),
+            Err(err) => {
+                tracing::warn!(entry, error = %err, "invalid entry in OBSCURA_ALLOW_NET; ignoring");
+                None
+            }
+        })
+        .collect()
+}
+
+/// Checks whether a literal IP and port are blocked, respecting `HARD_DENY` and `allow`.
+pub fn is_blocked_literal(ip: IpAddr, port: u16, allow: &[AllowNet]) -> bool {
+    if HARD_DENY.contains(&ip) {
+        return true;
+    }
+    if let IpAddr::V6(v6) = ip {
+        if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+            if HARD_DENY.contains(&IpAddr::V4(v4)) {
+                return true;
+            }
+        }
+    }
+    is_forbidden_ip(ip) && !allow.iter().any(|a| a.contains(ip, port))
+}
+
 pub(crate) fn validate_url(url: &Url, allow_private_network: bool) -> Result<(), ObscuraNetError> {
     let allow_private_network = allow_private_network || env_allows_private_network();
     let scheme = url.scheme();
@@ -717,10 +956,15 @@ pub(crate) fn validate_url(url: &Url, allow_private_network: bool) -> Result<(),
         return Ok(());
     }
 
+    let allow = allow_net_from_env();
+    let port = url
+        .port_or_known_default()
+        .unwrap_or(if scheme == "https" { 443 } else { 80 });
+
     if let Some(host) = url.host() {
         match host {
             url::Host::Ipv4(ip) => {
-                if is_forbidden_ip(IpAddr::V4(ip)) {
+                if is_blocked_literal(IpAddr::V4(ip), port, &allow) {
                     return Err(ObscuraNetError::Network(format!(
                         "Access to private/internal IP address {} is not allowed",
                         ip
@@ -728,7 +972,7 @@ pub(crate) fn validate_url(url: &Url, allow_private_network: bool) -> Result<(),
                 }
             }
             url::Host::Ipv6(ip) => {
-                if is_forbidden_ip(IpAddr::V6(ip)) {
+                if is_blocked_literal(IpAddr::V6(ip), port, &allow) {
                     return Err(ObscuraNetError::Network(format!(
                         "Access to private/internal IPv6 address {} is not allowed",
                         ip
@@ -815,9 +1059,10 @@ fn response_header_value<'a>(
             url, name
         )));
     }
-    first.to_str().map(Some).map_err(|_| {
-        ObscuraNetError::Cors(format!("{} returned an invalid {} header", url, name))
-    })
+    first
+        .to_str()
+        .map(Some)
+        .map_err(|_| ObscuraNetError::Cors(format!("{} returned an invalid {} header", url, name)))
 }
 
 fn validate_reqwest_cors_response(
@@ -829,16 +1074,9 @@ fn validate_reqwest_cors_response(
     if !cors_required(request, target) {
         return Ok(());
     }
-    let allow_origin = response_header_value(
-        headers,
-        "access-control-allow-origin",
-        target,
-    )?;
-    let allow_credentials = response_header_value(
-        headers,
-        "access-control-allow-credentials",
-        target,
-    )?;
+    let allow_origin = response_header_value(headers, "access-control-allow-origin", target)?;
+    let allow_credentials =
+        response_header_value(headers, "access-control-allow-credentials", target)?;
     validate_cors_response(
         request,
         target,
@@ -881,9 +1119,11 @@ async fn read_reqwest_body_limited(
         .unwrap_or(0)
         .min(limit);
     let mut body = Vec::with_capacity(capacity);
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        ObscuraNetError::Network(format!("Failed to read body: {}", error))
-    })? {
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| ObscuraNetError::Network(format!("Failed to read body: {}", error)))?
+    {
         if chunk.len() > limit.saturating_sub(body.len()) {
             return Err(response_too_large(url, limit));
         }
@@ -1059,7 +1299,14 @@ fn chrome_client_hints(ua: &str) -> (String, String) {
         .unwrap_or(145);
     const GREASE_CHARS: [char; 11] = [' ', '(', ':', '-', '.', '/', ')', ';', '=', '?', '_'];
     const GREASE_VER: [&str; 3] = ["8", "99", "24"];
-    const PERMS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+    const PERMS: [[usize; 3]; 6] = [
+        [0, 1, 2],
+        [0, 2, 1],
+        [1, 0, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [2, 1, 0],
+    ];
     let grease_brand = format!(
         "Not{}A{}Brand",
         GREASE_CHARS[major % 11],
@@ -1123,31 +1370,32 @@ impl ObscuraHttpClient {
     }
 
     async fn get_client(&self) -> &Client {
-        self.client.get_or_init(|| async {
-            let mut builder = Client::builder()
-                .redirect(Policy::none())
-                .timeout(self.timeout)
-                .danger_accept_invalid_certs(false)
-                // SSRF guard: reject hostnames that resolve to a private/loopback IP.
-                .dns_resolver(Arc::new(SsrfGuardResolver::new(self.allow_private_network)))
-;
+        self.client
+            .get_or_init(|| async {
+                let mut builder = Client::builder()
+                    .redirect(Policy::none())
+                    .timeout(self.timeout)
+                    .danger_accept_invalid_certs(false)
+                    // SSRF guard: reject hostnames that resolve to a private/loopback IP.
+                    .dns_resolver(Arc::new(SsrfGuardResolver::new(self.allow_private_network)));
 
-            if std::env::var_os("SSL_CERT_FILE").is_some()
-                || std::env::var_os("SSL_CERT_DIR").is_some()
-            {
-                for certificate in configured_root_certificates() {
-                    builder = builder.add_root_certificate(certificate.clone());
+                if std::env::var_os("SSL_CERT_FILE").is_some()
+                    || std::env::var_os("SSL_CERT_DIR").is_some()
+                {
+                    for certificate in configured_root_certificates() {
+                        builder = builder.add_root_certificate(certificate.clone());
+                    }
                 }
-            }
 
-            if let Some(ref proxy) = self.proxy_url {
-                if let Ok(p) = reqwest::Proxy::all(proxy.as_str()) {
-                    builder = builder.proxy(p);
+                if let Some(ref proxy) = self.proxy_url {
+                    if let Ok(p) = reqwest::Proxy::all(proxy.as_str()) {
+                        builder = builder.proxy(p);
+                    }
                 }
-            }
 
-            builder.build().expect("failed to build HTTP client")
-        }).await
+                builder.build().expect("failed to build HTTP client")
+            })
+            .await
     }
 
     /// Clone the request client owned by this browser context.
@@ -1179,11 +1427,13 @@ impl ObscuraHttpClient {
         url: &Url,
         callbacks: Option<&CallbackRegistry>,
     ) -> Result<Response, ObscuraNetError> {
-        self.fetch_with_method(Method::GET, url, None, callbacks).await
+        self.fetch_with_method(Method::GET, url, None, callbacks)
+            .await
     }
 
     pub async fn post_form(&self, url: &Url, body: &str) -> Result<Response, ObscuraNetError> {
-        self.fetch_with_method(Method::POST, url, Some(body.as_bytes().to_vec()), None).await
+        self.fetch_with_method(Method::POST, url, Some(body.as_bytes().to_vec()), None)
+            .await
     }
 
     /// `post_form` variant of `fetch_with_callbacks`.
@@ -1469,7 +1719,7 @@ impl ObscuraHttpClient {
                 url: current_url.clone(),
                 method: method.to_string(),
                 headers: self.extra_headers.read().await.clone(),
-                resource_type: request.resource_type.clone(),
+                resource_type: request.resource_type,
             };
 
             if let Some(interceptor) = self.interceptor.read().await.as_ref() {
@@ -1506,14 +1756,20 @@ impl ObscuraHttpClient {
                 HeaderValue::from_str(&sec_ch_ua)
                     .unwrap_or_else(|_| HeaderValue::from_static("\"Not:A-Brand\";v=\"99\", \"Google Chrome\";v=\"145\", \"Chromium\";v=\"145\"")),
             );
-            headers.insert(HeaderName::from_static("sec-ch-ua-mobile"), HeaderValue::from_static("?0"));
+            headers.insert(
+                HeaderName::from_static("sec-ch-ua-mobile"),
+                HeaderValue::from_static("?0"),
+            );
             headers.insert(
                 HeaderName::from_static("sec-ch-ua-platform"),
                 HeaderValue::from_str(&sec_ch_ua_platform)
                     .unwrap_or_else(|_| HeaderValue::from_static("\"Windows\"")),
             );
             if request.mode == RequestMode::Navigate {
-                headers.insert(HeaderName::from_static("upgrade-insecure-requests"), HeaderValue::from_static("1"));
+                headers.insert(
+                    HeaderName::from_static("upgrade-insecure-requests"),
+                    HeaderValue::from_static("1"),
+                );
             }
             headers.insert(USER_AGENT, HeaderValue::from_str(&ua).unwrap_or_else(|_| {
                 HeaderValue::from_static("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36")
@@ -1531,7 +1787,10 @@ impl ObscuraHttpClient {
                 HeaderValue::from_static(request.mode.header_value()),
             );
             if request.mode == RequestMode::Navigate {
-                headers.insert(HeaderName::from_static("sec-fetch-user"), HeaderValue::from_static("?1"));
+                headers.insert(
+                    HeaderName::from_static("sec-fetch-user"),
+                    HeaderValue::from_static("?1"),
+                );
             }
             headers.insert(
                 HeaderName::from_static("sec-fetch-dest"),
@@ -1579,7 +1838,8 @@ impl ObscuraHttpClient {
                         }
                         tracing::debug!(
                             "Cookie header invalid chars, filtered {} -> {} bytes",
-                            cookie_header.len(), filtered.len(),
+                            cookie_header.len(),
+                            filtered.len(),
                         );
                     }
                 }
@@ -1603,7 +1863,10 @@ impl ObscuraHttpClient {
                 headers.remove(reqwest::header::ORIGIN);
             }
 
-            let mut req_builder = self.get_client().await.request(method.clone(), current_url.as_str())
+            let mut req_builder = self
+                .get_client()
+                .await
+                .request(method.clone(), current_url.as_str())
                 .headers(headers);
 
             if let Some(ref b) = body {
@@ -1617,9 +1880,10 @@ impl ObscuraHttpClient {
             }
 
             let in_flight = InFlightGuard::new(&self.in_flight);
-            let resp = req_builder.send().await.map_err(|e| {
-                ObscuraNetError::Network(format!("{}: {}", current_url, e))
-            })?;
+            let resp = req_builder
+                .send()
+                .await
+                .map_err(|e| ObscuraNetError::Network(format!("{}: {}", current_url, e)))?;
 
             let status = resp.status();
             validate_reqwest_cors_response(
@@ -1640,7 +1904,12 @@ impl ObscuraHttpClient {
             let response_headers: HashMap<String, String> = resp
                 .headers()
                 .iter()
-                .map(|(k, v)| (k.as_str().to_lowercase(), v.to_str().unwrap_or("").to_string()))
+                .map(|(k, v)| {
+                    (
+                        k.as_str().to_lowercase(),
+                        v.to_str().unwrap_or("").to_string(),
+                    )
+                })
                 .collect();
 
             if status.is_redirection() {
@@ -1653,8 +1922,7 @@ impl ObscuraHttpClient {
                     })?;
                     validate_url(&next_url, self.allow_private_network)?;
                     validate_request_mode(&request, &next_url)?;
-                    redirect_tainted |=
-                        redirect_taints_origin(&request, &current_url, &next_url);
+                    redirect_tainted |= redirect_taints_origin(&request, &current_url, &next_url);
                     redirects.push(current_url.clone());
                     current_url = next_url;
                     if status == reqwest::StatusCode::MOVED_PERMANENTLY
@@ -1668,12 +1936,8 @@ impl ObscuraHttpClient {
                 }
             }
 
-            let body_bytes = read_reqwest_body_limited(
-                resp,
-                &current_url,
-                request.max_response_bytes,
-            )
-            .await?;
+            let body_bytes =
+                read_reqwest_body_limited(resp, &current_url, request.max_response_bytes).await?;
             drop(in_flight);
 
             let response = Response {
@@ -1742,17 +2006,17 @@ pub enum ObscuraNetError {
 #[cfg(test)]
 mod ssrf_tests {
     use super::{
-        is_forbidden_ip, request_fetch_site, request_referrer, validate_url,
-        CallbackRegistry, ObscuraHttpClient, ObscuraNetError, RequestCredentials, RequestMode,
-        ResourceRequest, ResourceType, SsrfGuardResolver,
+        is_blocked_literal, is_forbidden_ip, request_fetch_site, request_referrer, validate_url,
+        AllowNet, CallbackRegistry, ObscuraHttpClient, ObscuraNetError, RequestCredentials,
+        RequestMode, ResourceRequest, ResourceType, SsrfGuardResolver, HARD_DENY,
     };
     use crate::cookies::CookieJar;
     use reqwest::dns::{Name, Resolve};
     use std::collections::HashMap;
     use std::net::IpAddr;
     use std::str::FromStr;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
     use url::Url;
 
@@ -1864,8 +2128,8 @@ mod ssrf_tests {
     fn public_ipv6_is_allowed() {
         for s in [
             "2606:4700:4700::1111", // Cloudflare DNS
-            "3ffe::1",               // below 3fff::/20
-            "3fff:1000::1",          // above 3fff:fff::/20
+            "3ffe::1",              // below 3fff::/20
+            "3fff:1000::1",         // above 3fff:fff::/20
         ] {
             assert!(!is_forbidden_ip(ip(s)), "{s} should be allowed");
         }
@@ -1874,13 +2138,13 @@ mod ssrf_tests {
     #[test]
     fn ipv6_translation_cannot_hide_forbidden_ipv4() {
         for s in [
-            "2002:7f00:1::",       // 6to4 loopback
-            "2002:a9fe:a9fe::",    // 6to4 link-local metadata
-            "2002:6464:64c8::",    // 6to4 CGNAT metadata
-            "64:ff9b::7f00:1",     // NAT64 loopback
-            "64:ff9b::a9fe:a9fe",  // NAT64 link-local metadata
-            "64:ff9b::6464:64c8",  // NAT64 CGNAT metadata
-            "64:ff9b:1::1",        // local-use translation prefix
+            "2002:7f00:1::",      // 6to4 loopback
+            "2002:a9fe:a9fe::",   // 6to4 link-local metadata
+            "2002:6464:64c8::",   // 6to4 CGNAT metadata
+            "64:ff9b::7f00:1",    // NAT64 loopback
+            "64:ff9b::a9fe:a9fe", // NAT64 link-local metadata
+            "64:ff9b::6464:64c8", // NAT64 CGNAT metadata
+            "64:ff9b:1::1",       // local-use translation prefix
         ] {
             assert!(is_forbidden_ip(ip(s)), "{s} should be forbidden");
         }
@@ -1893,11 +2157,11 @@ mod ssrf_tests {
     #[test]
     fn native_non_global_ipv6_ranges_are_forbidden() {
         for s in [
-            "100::1",       // discard-only
-            "2001:db8::1",  // documentation
-            "3fff::1",      // documentation
-            "ff02::1",      // link-local multicast
-            "ff0e::1",      // global-scope multicast
+            "100::1",      // discard-only
+            "2001:db8::1", // documentation
+            "3fff::1",     // documentation
+            "ff02::1",     // link-local multicast
+            "ff0e::1",     // global-scope multicast
         ] {
             assert!(is_forbidden_ip(ip(s)), "{s} should be forbidden");
         }
@@ -1909,18 +2173,164 @@ mod ssrf_tests {
         assert!(validate_url(&Url::parse("http://0.0.0.0:8080/").unwrap(), false).is_err());
         assert!(validate_url(&Url::parse("http://127.0.0.1/").unwrap(), false).is_err());
         assert!(validate_url(&Url::parse("http://example.com/").unwrap(), false).is_ok());
-        assert!(
-            validate_url(&Url::parse("http://[64:ff9b::7f00:1]/").unwrap(), false).is_err()
-        );
-        assert!(
-            validate_url(&Url::parse("http://[2002:a9fe:a9fe::]/").unwrap(), false).is_err()
-        );
+        assert!(validate_url(&Url::parse("http://[64:ff9b::7f00:1]/").unwrap(), false).is_err());
+        assert!(validate_url(&Url::parse("http://[2002:a9fe:a9fe::]/").unwrap(), false).is_err());
         assert!(validate_url(&Url::parse("http://192.0.0.9/").unwrap(), false).is_ok());
-        assert!(
-            validate_url(&Url::parse("http://[64:ff9b::808:808]/").unwrap(), false).is_ok()
-        );
+        assert!(validate_url(&Url::parse("http://[64:ff9b::808:808]/").unwrap(), false).is_ok());
         // The allow flag bypasses the guard (local-dev escape hatch).
         assert!(validate_url(&Url::parse("http://127.0.0.1/").unwrap(), true).is_ok());
+    }
+
+    #[test]
+    fn allow_net_parse_ipv4_and_ipv6_with_and_without_ports() {
+        // IPv4 CIDR without port
+        let net = AllowNet::parse("100.64.0.0/10").unwrap();
+        assert_eq!(net.addr, ip("100.64.0.0"));
+        assert_eq!(net.prefix, 10);
+        assert_eq!(net.port, None);
+
+        // IPv4 CIDR with port
+        let net = AllowNet::parse("100.124.38.17/32:3000").unwrap();
+        assert_eq!(net.addr, ip("100.124.38.17"));
+        assert_eq!(net.prefix, 32);
+        assert_eq!(net.port, Some(3000));
+
+        // IPv4 with port only (defaults prefix to 32)
+        let net = AllowNet::parse("100.124.38.17:3000").unwrap();
+        assert_eq!(net.addr, ip("100.124.38.17"));
+        assert_eq!(net.prefix, 32);
+        assert_eq!(net.port, Some(3000));
+
+        // IPv4 address only
+        let net = AllowNet::parse("100.124.38.17").unwrap();
+        assert_eq!(net.addr, ip("100.124.38.17"));
+        assert_eq!(net.prefix, 32);
+        assert_eq!(net.port, None);
+
+        // IPv6 CIDR in brackets without port
+        let net = AllowNet::parse("[fd00::]/64").unwrap();
+        assert_eq!(net.addr, ip("fd00::"));
+        assert_eq!(net.prefix, 64);
+        assert_eq!(net.port, None);
+
+        // IPv6 CIDR in brackets with port
+        let net = AllowNet::parse("[fd00::]/64:8080").unwrap();
+        assert_eq!(net.addr, ip("fd00::"));
+        assert_eq!(net.prefix, 64);
+        assert_eq!(net.port, Some(8080));
+
+        // IPv6 in brackets with port only (defaults prefix to 128)
+        let net = AllowNet::parse("[fd00::1]:8080").unwrap();
+        assert_eq!(net.addr, ip("fd00::1"));
+        assert_eq!(net.prefix, 128);
+        assert_eq!(net.port, Some(8080));
+
+        // IPv6 in brackets address only
+        let net = AllowNet::parse("[fd00::1]").unwrap();
+        assert_eq!(net.addr, ip("fd00::1"));
+        assert_eq!(net.prefix, 128);
+        assert_eq!(net.port, None);
+
+        // IPv6 without brackets with prefix
+        let net = AllowNet::parse("fd00::/64").unwrap();
+        assert_eq!(net.addr, ip("fd00::"));
+        assert_eq!(net.prefix, 64);
+        assert_eq!(net.port, None);
+
+        // Prefix boundary validations
+        assert!(AllowNet::parse("10.0.0.0/32").is_ok());
+        assert!(AllowNet::parse("10.0.0.0/33").is_err());
+        assert!(AllowNet::parse("[fd00::]/128").is_ok());
+        assert!(AllowNet::parse("[fd00::]/129").is_err());
+
+        // Invalid cases
+        assert!(AllowNet::parse("").is_err());
+        assert!(AllowNet::parse("   ").is_err());
+        assert!(AllowNet::parse("not-an-ip/24").is_err());
+        assert!(AllowNet::parse("10.0.0.1/abc").is_err());
+        assert!(AllowNet::parse("10.0.0.1/24:99999").is_err());
+        assert!(AllowNet::parse("[fd00::/64").is_err());
+    }
+
+    #[test]
+    fn allow_net_port_and_subnet_matching() {
+        let exact_port = [AllowNet::parse("100.124.38.17/32:3000").unwrap()];
+        let cgnat_any_port = [AllowNet::parse("100.64.0.0/10").unwrap()];
+
+        // 100.124.38.17:3000 is allowed by exact rule
+        assert!(!is_blocked_literal(ip("100.124.38.17"), 3000, &exact_port));
+        // 100.124.38.17:3001 is denied when port 3000 is required
+        assert!(is_blocked_literal(ip("100.124.38.17"), 3001, &exact_port));
+
+        // 100.124.38.17 is allowed on any port by 100.64.0.0/10
+        assert!(!is_blocked_literal(
+            ip("100.124.38.17"),
+            3000,
+            &cgnat_any_port
+        ));
+        assert!(!is_blocked_literal(
+            ip("100.124.38.17"),
+            3001,
+            &cgnat_any_port
+        ));
+
+        // IP outside 100.64.0.0/10 is still blocked
+        assert!(is_blocked_literal(ip("10.0.0.1"), 3000, &cgnat_any_port));
+        assert!(is_blocked_literal(ip("192.168.1.1"), 3000, &cgnat_any_port));
+    }
+
+    #[test]
+    fn alibaba_metadata_blocked_even_with_cgnat_allowed() {
+        // 100.100.100.200 is inside 100.64.0.0/10, but is Alibaba IMDS so HARD_DENY must block it
+        let allow_cgnat = [AllowNet::parse("100.64.0.0/10").unwrap()];
+        assert!(is_blocked_literal(ip("100.100.100.200"), 80, &allow_cgnat));
+        assert!(is_blocked_literal(ip("100.100.100.200"), 443, &allow_cgnat));
+
+        // Even an open 0.0.0.0/0 allowlist must not unblock Alibaba IMDS
+        let allow_all = [AllowNet::parse("0.0.0.0/0").unwrap()];
+        assert!(is_blocked_literal(ip("100.100.100.200"), 80, &allow_all));
+    }
+
+    #[test]
+    fn cloud_metadata_endpoints_are_always_blocked() {
+        let allow_all = [
+            AllowNet::parse("0.0.0.0/0").unwrap(),
+            AllowNet::parse("[::]/0").unwrap(),
+        ];
+
+        // AWS/GCP/Azure IMDS
+        assert!(is_blocked_literal(ip("169.254.169.254"), 80, &[]));
+        assert!(is_blocked_literal(ip("169.254.169.254"), 80, &allow_all));
+
+        // Alibaba IMDS
+        assert!(is_blocked_literal(ip("100.100.100.200"), 80, &[]));
+        assert!(is_blocked_literal(ip("100.100.100.200"), 80, &allow_all));
+
+        // AWS ECS task metadata
+        assert!(is_blocked_literal(ip("169.254.170.2"), 80, &[]));
+        assert!(is_blocked_literal(ip("169.254.170.2"), 80, &allow_all));
+
+        // AWS IMDSv6
+        assert!(is_blocked_literal(ip("fd00:ec2::254"), 80, &[]));
+        assert!(is_blocked_literal(ip("fd00:ec2::254"), 80, &allow_all));
+
+        // All endpoints in HARD_DENY are unconditionally blocked
+        for &endpoint in HARD_DENY {
+            assert!(is_blocked_literal(endpoint, 80, &[]));
+            assert!(is_blocked_literal(endpoint, 80, &allow_all));
+        }
+
+        // IPv4-mapped forms of hard deny
+        assert!(is_blocked_literal(
+            ip("::ffff:169.254.169.254"),
+            80,
+            &allow_all
+        ));
+        assert!(is_blocked_literal(
+            ip("::ffff:100.100.100.200"),
+            80,
+            &allow_all
+        ));
     }
 
     #[test]
@@ -1942,15 +2352,9 @@ mod ssrf_tests {
         assert_eq!(font.destination(), "font");
         assert_eq!(font.accept(), "*/*");
 
-        assert!(image.sends_credentials_to(
-            &Url::parse("https://cdn.example/image.png").unwrap()
-        ));
-        assert!(font.sends_credentials_to(
-            &Url::parse("https://app.example/font.woff2").unwrap()
-        ));
-        assert!(!font.sends_credentials_to(
-            &Url::parse("https://cdn.example/font.woff2").unwrap()
-        ));
+        assert!(image.sends_credentials_to(&Url::parse("https://cdn.example/image.png").unwrap()));
+        assert!(font.sends_credentials_to(&Url::parse("https://app.example/font.woff2").unwrap()));
+        assert!(!font.sends_credentials_to(&Url::parse("https://cdn.example/font.woff2").unwrap()));
 
         let module = ResourceRequest::module_script(&document, &document);
         assert_eq!(module.resource_type, ResourceType::Script);
@@ -1958,12 +2362,8 @@ mod ssrf_tests {
         assert_eq!(module.credentials, RequestCredentials::SameOrigin);
         assert_eq!(module.destination(), "script");
         assert_eq!(module.accept(), "*/*");
-        assert!(module.sends_credentials_to(
-            &Url::parse("https://app.example/chunk.js").unwrap()
-        ));
-        assert!(!module.sends_credentials_to(
-            &Url::parse("https://cdn.example/chunk.js").unwrap()
-        ));
+        assert!(module.sends_credentials_to(&Url::parse("https://app.example/chunk.js").unwrap()));
+        assert!(!module.sends_credentials_to(&Url::parse("https://cdn.example/chunk.js").unwrap()));
     }
 
     #[test]
@@ -2059,7 +2459,10 @@ mod ssrf_tests {
             .fetch(&target)
             .await
             .expect_err("the 21st redirect must be too many");
-        assert!(matches!(err, ObscuraNetError::TooManyRedirects(_)), "got {err:?}");
+        assert!(
+            matches!(err, ObscuraNetError::TooManyRedirects(_)),
+            "got {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -2184,11 +2587,7 @@ mod ssrf_tests {
     #[tokio::test]
     async fn accept_language_override_reaches_the_wire() {
         let (target, mut received) = http_fixture(vec![ok_response("", "ok")]).await;
-        let client = ObscuraHttpClient::with_full_options(
-            Arc::new(CookieJar::new()),
-            None,
-            true,
-        );
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         client.set_accept_language("de-DE,de;q=0.9").await;
 
         client.fetch(&target).await.unwrap();
@@ -2207,11 +2606,7 @@ mod ssrf_tests {
         let advertised = "HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\n";
         let chunked = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\nabcd\r\n4\r\nefgh\r\n0\r\n\r\n";
         let (target, _) = http_fixture(vec![advertised.to_string(), chunked.to_string()]).await;
-        let client = ObscuraHttpClient::with_full_options(
-            Arc::new(CookieJar::new()),
-            None,
-            true,
-        );
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let initiator = target.clone();
         let request = ResourceRequest::subresource(ResourceType::Image, &initiator)
             .with_max_response_bytes(6);
@@ -2393,11 +2788,8 @@ mod ssrf_tests {
     #[tokio::test]
     async fn transport_timeout_returns_active_requests_to_zero() {
         let (target, started) = hanging_fixture().await;
-        let mut client = ObscuraHttpClient::with_full_options(
-            Arc::new(CookieJar::new()),
-            None,
-            true,
-        );
+        let mut client =
+            ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         client.timeout = std::time::Duration::from_millis(25);
         let fetch = client.fetch(&target);
         let (_, result) = tokio::join!(started, fetch);
@@ -2409,11 +2801,7 @@ mod ssrf_tests {
     async fn callbacks_fire_once_across_redirects() {
         let redirect = "HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
         let (target, _) = http_fixture(vec![redirect.to_string(), ok_response("", "done")]).await;
-        let client = ObscuraHttpClient::with_full_options(
-            Arc::new(CookieJar::new()),
-            None,
-            true,
-        );
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let callbacks = CallbackRegistry::new();
         let requests = Arc::new(AtomicUsize::new(0));
         let responses = Arc::new(AtomicUsize::new(0));
@@ -2520,11 +2908,8 @@ mod ssrf_tests {
 
     #[tokio::test]
     async fn cacheable_identical_module_scripts_share_one_in_flight_request() {
-        let (url, network_requests) = cacheable_resource_fixture(
-            200,
-            "Cache-Control: public, max-age=3600\r\n",
-        )
-        .await;
+        let (url, network_requests) =
+            cacheable_resource_fixture(200, "Cache-Control: public, max-age=3600\r\n").await;
         let initiator = url.join("/app.js").unwrap();
         let client = Arc::new(ObscuraHttpClient::with_full_options(
             Arc::new(CookieJar::new()),
@@ -2685,17 +3070,14 @@ mod ssrf_tests {
         let ca_cert = ca_params.self_signed(&ca_key).unwrap();
 
         let leaf_key = rcgen::KeyPair::generate().unwrap();
-        let leaf_params =
-            rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+        let leaf_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
         let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
 
         let certs = vec![tokio_rustls::rustls::pki_types::CertificateDer::from(
             leaf_cert.der().to_vec(),
         )];
         let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(
-            tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer::from(
-                leaf_key.serialize_der(),
-            ),
+            tokio_rustls::rustls::pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der()),
         );
         let config = tokio_rustls::rustls::ServerConfig::builder()
             .with_no_client_auth()
@@ -2741,10 +3123,12 @@ mod ssrf_tests {
         std::fs::write(ca_file.path(), ca_pem).unwrap();
         std::env::set_var("SSL_CERT_FILE", ca_file.path());
 
-        let client =
-            ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap();
-        let resp = client.fetch(&url).await.expect("private CA in SSL_CERT_FILE must be trusted");
+        let resp = client
+            .fetch(&url)
+            .await
+            .expect("private CA in SSL_CERT_FILE must be trusted");
         assert_eq!(resp.status, 200);
         assert_eq!(resp.text(), "private ca ok");
     }
@@ -2756,8 +3140,7 @@ mod ssrf_tests {
         std::fs::write(ca_dir.path().join("private-ca.pem"), ca_pem).unwrap();
         std::env::set_var("SSL_CERT_DIR", ca_dir.path());
 
-        let client =
-            ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap();
         let resp = client
             .fetch(&url)
@@ -2772,10 +3155,12 @@ mod ssrf_tests {
         // The same fixture that the SSL_CERT_FILE test trusts must fail here. The
         // listener is reachable (same setup), so an Err can only be TLS.
         let (port, _ca_pem) = https_fixture_with_private_ca().await;
-        let client =
-            ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
+        let client = ObscuraHttpClient::with_full_options(Arc::new(CookieJar::new()), None, true);
         let url = Url::parse(&format!("https://127.0.0.1:{port}/")).unwrap();
-        assert!(client.fetch(&url).await.is_err(), "unknown CA must be rejected");
+        assert!(
+            client.fetch(&url).await.is_err(),
+            "unknown CA must be rejected"
+        );
     }
 }
 

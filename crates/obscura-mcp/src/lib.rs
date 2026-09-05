@@ -273,12 +273,13 @@ impl BrowserState {
     /// the page isn't re-rendered without it. Returns `Err` if the ref
     /// hasn't been registered (caller must call browser_snapshot first).
     pub(crate) fn ref_to_selector(&self, r: &str) -> Result<String, String> {
-        if !self.interactive_refs.contains_key(r) {
+        let clean = r.trim().strip_prefix('@').unwrap_or(r.trim());
+        if !self.interactive_refs.contains_key(clean) {
             return Err(format!(
                 "unknown ref '{r}'; call browser_snapshot first to refresh the ref table"
             ));
         }
-        Ok(format!("[data-obscura-ref=\"{r}\"]"))
+        Ok(format!("[data-obscura-ref=\"{clean}\"]"))
     }
 }
 

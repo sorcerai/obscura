@@ -662,6 +662,33 @@ pub fn is_forbidden_ip(ip: IpAddr) -> bool {
 /// Implemented for both transports: `reqwest::dns::Resolve` just below, and
 /// `wreq::dns::Resolve` in `wreq_client.rs`, so `--stealth` never trades the
 /// guard away for a better TLS fingerprint.
+/// Hard-denied cloud metadata endpoints that NO allowlist may EVER unblock:
+/// - 169.254.169.254 (AWS/GCP/Azure IMDS)
+/// - 100.100.100.200 (Alibaba IMDS)
+/// - 169.254.170.2 (AWS ECS)
+/// - fd00:ec2::254 (AWS IMDSv6)
+pub const HARD_DENY: &[IpAddr] = &[
+    IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
+    IpAddr::V4(Ipv4Addr::new(100, 100, 100, 200)),
+    IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2)),
+    IpAddr::V6(Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)),
+];
+
+/// Unconditionally returns true if `ip` is in `HARD_DENY` (including IPv4-mapped IPv6).
+pub fn is_hard_deny(ip: IpAddr) -> bool {
+    if HARD_DENY.contains(&ip) {
+        return true;
+    }
+    if let IpAddr::V6(v6) = ip {
+        if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
+            if HARD_DENY.contains(&IpAddr::V4(v4)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 pub struct SsrfGuardResolver {
     pub(crate) allow_private: bool,
 }
@@ -681,6 +708,15 @@ impl Resolve for SsrfGuardResolver {
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?
                 .collect();
+            // Cloud metadata endpoints are unconditionally forbidden regardless of allow_private
+            if let Some(bad) = addrs.iter().find(|sa| is_hard_deny(sa.ip())) {
+                return Err(format!(
+                    "SSRF blocked: '{}' resolves to hard-denied cloud metadata address {}",
+                    host,
+                    bad.ip()
+                )
+                .into());
+            }
             if !allow {
                 if let Some(bad) = addrs.iter().find(|sa| is_forbidden_ip(sa.ip())) {
                     return Err(format!(
@@ -896,18 +932,6 @@ impl AllowNet {
     }
 }
 
-/// Cloud metadata endpoints that NO allowlist may EVER unblock:
-/// - 169.254.169.254 (AWS/GCP/Azure IMDS)
-/// - 100.100.100.200 (Alibaba IMDS)
-/// - 169.254.170.2 (AWS ECS)
-/// - fd00:ec2::254 (AWS IMDSv6)
-pub const HARD_DENY: &[IpAddr] = &[
-    IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),
-    IpAddr::V4(Ipv4Addr::new(100, 100, 100, 200)),
-    IpAddr::V4(Ipv4Addr::new(169, 254, 170, 2)),
-    IpAddr::V6(Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)),
-];
-
 /// Reads `OBSCURA_ALLOW_NET` env var (comma-separated list of entries).
 pub fn allow_net_from_env() -> Vec<AllowNet> {
     let var = match std::env::var("OBSCURA_ALLOW_NET") {
@@ -929,15 +953,8 @@ pub fn allow_net_from_env() -> Vec<AllowNet> {
 
 /// Checks whether a literal IP and port are blocked, respecting `HARD_DENY` and `allow`.
 pub fn is_blocked_literal(ip: IpAddr, port: u16, allow: &[AllowNet]) -> bool {
-    if HARD_DENY.contains(&ip) {
+    if is_hard_deny(ip) {
         return true;
-    }
-    if let IpAddr::V6(v6) = ip {
-        if let Some(v4) = v6.to_ipv4_mapped().or_else(|| v6.to_ipv4()) {
-            if HARD_DENY.contains(&IpAddr::V4(v4)) {
-                return true;
-            }
-        }
     }
     is_forbidden_ip(ip) && !allow.iter().any(|a| a.contains(ip, port))
 }

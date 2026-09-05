@@ -41,6 +41,15 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
                 .await
                 .map_err(|e| -> Box<dyn Error + Send + Sync> { Box::new(e) })?
                 .collect();
+            // Cloud metadata endpoints are unconditionally forbidden regardless of allow_private
+            if let Some(bad) = addrs.iter().find(|sa| crate::client::is_hard_deny(sa.ip())) {
+                return Err(format!(
+                    "SSRF blocked: '{}' resolves to hard-denied cloud metadata address {}",
+                    host,
+                    bad.ip()
+                )
+                .into());
+            }
             if !allow {
                 if let Some(bad) = addrs.iter().find(|sa| is_forbidden_ip(sa.ip())) {
                     return Err(format!(

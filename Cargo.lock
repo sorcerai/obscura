@@ -2374,9 +2374,9 @@ dependencies = [
 
 [[package]]
 name = "psl"
-version = "2.1.223"
+version = "2.1.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0dedad316e05de220cbf3fd8bfb69f3df8755dde2d7d479211827b595168a93"
+checksum = "534732a31a0850a1ab425e90b9aa820a1ba9295efb5c8535da04747dc14f2197"
 dependencies = [
  "psl-types",
 ]
@@ -2552,6 +2552,7 @@ name = "reach-secrets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "psl",
  "serde",
  "serde_json",
 ]

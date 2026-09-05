@@ -146,6 +146,47 @@ pub fn detect_roadblock(status: u16, headers: &http::HeaderMap, page: &Page) -> 
     None
 }
 
+/// Filter a Playwright storage state JSON Value so that only cookies and origins matching
+/// the target domain are kept. This prevents leaking the entire cookie jar during auth handoff.
+pub fn filter_storage_state_for_domain(storage_state: &mut Value, domain: &str) {
+    let clean_target = domain.trim().trim_start_matches('.').to_lowercase();
+    if clean_target.is_empty() {
+        return;
+    }
+
+    if let Some(cookies) = storage_state
+        .get_mut("cookies")
+        .and_then(Value::as_array_mut)
+    {
+        cookies.retain(|c| {
+            if let Some(d) = c.get("domain").and_then(Value::as_str) {
+                let clean_d = d.trim().trim_start_matches('.').to_lowercase();
+                clean_d == clean_target || clean_d.ends_with(&format!(".{clean_target}"))
+            } else {
+                false
+            }
+        });
+    }
+
+    if let Some(origins) = storage_state
+        .get_mut("origins")
+        .and_then(Value::as_array_mut)
+    {
+        origins.retain(|o| {
+            if let Some(orig) = o.get("origin").and_then(Value::as_str) {
+                if let Ok(parsed) = url::Url::parse(orig) {
+                    if let Some(host) = parsed.host_str() {
+                        let clean_h = host.trim().trim_start_matches('.').to_lowercase();
+                        return clean_h == clean_target
+                            || clean_h.ends_with(&format!(".{clean_target}"));
+                    }
+                }
+            }
+            false
+        });
+    }
+}
+
 /// Escalate an anti-bot roadblock to a Reach headed browser instance for human/headed takeover.
 pub async fn tool_escalate(args: &Value, state: &mut BrowserState) -> Result<String, String> {
     let reach_url = args
@@ -189,7 +230,8 @@ pub async fn tool_escalate(args: &Value, state: &mut BrowserState) -> Result<Str
     }
 
     // Exports current storage state JSON via state.context.export_storage_state()
-    let storage_state = state.context.export_storage_state();
+    let mut storage_state = state.context.export_storage_state();
+    filter_storage_state_for_domain(&mut storage_state, &domain);
     let storage_state_str = serde_json::to_string(&storage_state).unwrap_or_default();
 
     let escalation_id = format!("esc-{}", uuid::Uuid::new_v4());
@@ -204,11 +246,17 @@ pub async fn tool_escalate(args: &Value, state: &mut BrowserState) -> Result<Str
     // Calls Reach API POST {reach_url}/agent/screens/0/lease with owner "obscura:<task>"
     if !reach_url.is_empty() && !reach_url.starts_with("mock") && !reach_url.starts_with("test") {
         let client = reqwest::Client::new();
-        let lease_resp = client
+        let mut lease_req = client
             .post(format!("{reach_url}/agent/screens/0/lease"))
-            .json(&json!({ "owner": owner }))
-            .send()
-            .await;
+            .json(&json!({ "owner": owner }));
+
+        if let Ok(auth_token) = std::env::var("REACH_AUTH_TOKEN") {
+            if !auth_token.is_empty() {
+                lease_req = lease_req.bearer_auth(auth_token);
+            }
+        }
+
+        let lease_resp = lease_req.send().await;
 
         if let Ok(resp) = lease_resp {
             if let Ok(val) = resp.json::<Value>().await {
@@ -232,6 +280,12 @@ pub async fn tool_escalate(args: &Value, state: &mut BrowserState) -> Result<Str
         let mut req_builder = client
             .post(format!("{reach_url}/tools/auth_handoff"))
             .json(&handoff_body);
+
+        if let Ok(auth_token) = std::env::var("REACH_AUTH_TOKEN") {
+            if !auth_token.is_empty() {
+                req_builder = req_builder.bearer_auth(auth_token);
+            }
+        }
 
         if let Some(ref tok) = lease_token {
             req_builder = req_builder.header("x-lease-token", tok.as_str());
@@ -297,8 +351,13 @@ pub async fn tool_escalate_resume(
         && !reach_url.starts_with("test")
     {
         let client = reqwest::Client::new();
-        let resp = client
-            .get(format!("{reach_url}/agent/screens/{screen}"))
+        let mut screen_req = client.get(format!("{reach_url}/agent/screens/{screen}"));
+        if let Ok(auth_token) = std::env::var("REACH_AUTH_TOKEN") {
+            if !auth_token.is_empty() {
+                screen_req = screen_req.bearer_auth(auth_token);
+            }
+        }
+        let resp = screen_req
             .send()
             .await
             .map_err(|e| format!("Failed to poll Reach screen: {e}"))?;
@@ -318,11 +377,15 @@ pub async fn tool_escalate_resume(
         if !reach_url.is_empty() && !reach_url.starts_with("mock") && !reach_url.starts_with("test")
         {
             let client = reqwest::Client::new();
-            let exec_resp = client
+            let mut exec_req = client
                 .post(format!("{reach_url}/tools/exec"))
-                .json(&json!({ "command": "cat /workspace/.reach/state.json" }))
-                .send()
-                .await;
+                .json(&json!({ "command": "cat /workspace/.reach/state.json" }));
+            if let Ok(auth_token) = std::env::var("REACH_AUTH_TOKEN") {
+                if !auth_token.is_empty() {
+                    exec_req = exec_req.bearer_auth(auth_token);
+                }
+            }
+            let exec_resp = exec_req.send().await;
             if let Ok(res) = exec_resp {
                 if let Ok(exec_val) = res.json::<Value>().await {
                     let text = exec_val
@@ -357,6 +420,11 @@ pub async fn tool_escalate_resume(
         {
             let client = reqwest::Client::new();
             let mut req = client.delete(format!("{reach_url}/agent/screens/{screen}/lease"));
+            if let Ok(auth_token) = std::env::var("REACH_AUTH_TOKEN") {
+                if !auth_token.is_empty() {
+                    req = req.bearer_auth(auth_token);
+                }
+            }
             if let Some(ref tok) = esc.lease_token {
                 req = req.header("x-lease-token", tok.as_str());
             }
@@ -393,6 +461,44 @@ mod tests {
             "bbc.co.uk"
         );
         assert_eq!(extract_domain_key("example.com"), "example.com");
+    }
+
+    #[test]
+    fn test_filter_storage_state_for_domain() {
+        let mut state = json!({
+            "cookies": [
+                { "name": "sid", "value": "123", "domain": ".target.com" },
+                { "name": "sub", "value": "456", "domain": "sub.target.com" },
+                { "name": "other", "value": "secret", "domain": "other.com" },
+                { "name": "evil", "value": "x", "domain": ".target.com.attacker.com" }
+            ],
+            "origins": [
+                {
+                    "origin": "https://target.com",
+                    "localStorage": [{ "name": "k1", "value": "v1" }]
+                },
+                {
+                    "origin": "https://sub.target.com",
+                    "localStorage": [{ "name": "k2", "value": "v2" }]
+                },
+                {
+                    "origin": "https://other.com",
+                    "localStorage": [{ "name": "k3", "value": "secret" }]
+                }
+            ]
+        });
+
+        filter_storage_state_for_domain(&mut state, "target.com");
+
+        let cookies = state["cookies"].as_array().unwrap();
+        assert_eq!(cookies.len(), 2);
+        assert_eq!(cookies[0]["name"], "sid");
+        assert_eq!(cookies[1]["name"], "sub");
+
+        let origins = state["origins"].as_array().unwrap();
+        assert_eq!(origins.len(), 2);
+        assert_eq!(origins[0]["origin"], "https://target.com");
+        assert_eq!(origins[1]["origin"], "https://sub.target.com");
     }
 
     #[test]

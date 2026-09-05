@@ -81,6 +81,7 @@ pub struct JsNetworkEvent {
     pub response_headers: HashMap<String, String>,
     pub body_size: usize,
     pub timestamp: f64,
+    pub request_body: Option<String>,
 }
 
 #[cfg(feature = "render")]
@@ -2876,6 +2877,11 @@ async fn op_fetch_url(
             response_headers: resp_headers.clone(),
             body_size: resp_bytes.len(),
             timestamp,
+            request_body: if current_body.is_empty() {
+                None
+            } else {
+                Some(String::from_utf8_lossy(&current_body).to_string())
+            },
         });
         const MAX_JS_NETWORK_EVENTS: usize = 4096;
         if gs.js_network_events.len() > MAX_JS_NETWORK_EVENTS {

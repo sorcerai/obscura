@@ -1980,15 +1980,19 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "http",
  "obscura-browser",
  "obscura-dom",
  "obscura-net",
+ "reach-secrets",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2541,6 +2545,15 @@ dependencies = [
  "rustls-pki-types",
  "time",
  "yasna",
+]
+
+[[package]]
+name = "reach-secrets"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

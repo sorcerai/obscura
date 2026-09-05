@@ -141,6 +141,22 @@ enum Command {
         /// that flood the console with per-page script warnings (issue #264).
         #[arg(long)]
         quiet: bool,
+
+        /// Enable lightweight MJPEG live streaming at /view and /stream
+        #[arg(long)]
+        view: bool,
+
+        /// Authentication token for /view and /stream (default: auto-generated random token)
+        #[arg(long, env = "OBSCURA_VIEW_TOKEN")]
+        view_token: Option<String>,
+
+        /// Frame rate for live stream (1-15 fps, default: 5)
+        #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u8).range(1..=15))]
+        view_fps: u8,
+
+        /// Maximum concurrent viewers for /stream (default: 4)
+        #[arg(long, default_value_t = 4)]
+        view_max_viewers: usize,
     },
 
     Fetch {
@@ -417,6 +433,10 @@ async fn main() -> anyhow::Result<()> {
             allow_file_access,
             storage_dir,
             quiet: _,
+            view,
+            view_token,
+            view_fps,
+            view_max_viewers,
         }) => {
             // Fall back to OBSCURA_PROXY so a proxy can be supplied without
             // putting credentials on the command line. The multi-worker load
@@ -476,6 +496,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
+            let view_options = if view {
+                Some(obscura_cdp::ViewOptions {
+                    enabled: true,
+                    token: view_token.unwrap_or_default(),
+                    fps: view_fps,
+                    max_viewers: view_max_viewers,
+                })
+            } else {
+                None
+            };
+
             let serve_res = if workers > 1 {
                 tracing::info!("{} worker processes", workers);
                 run_multi_worker_serve(
@@ -489,7 +520,7 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await
             } else {
-                obscura_cdp::start_with_serve_options_and_limit(
+                obscura_cdp::start_with_serve_options_full(
                     port,
                     &host,
                     proxy,
@@ -499,6 +530,7 @@ async fn main() -> anyhow::Result<()> {
                     effective_storage_dir.clone(),
                     args.allow_private_network,
                     max_connections,
+                    view_options,
                 )
                 .await
             };

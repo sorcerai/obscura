@@ -21,4 +21,8 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 regex = { workspace = true }
+reach-secrets = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+uuid = { workspace = true }
 base64 = { workspace = true, optional = true }

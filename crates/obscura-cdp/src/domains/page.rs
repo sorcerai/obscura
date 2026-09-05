@@ -361,22 +361,7 @@ fn encode_screenshot(
                 .map_err(|error| format!("PNG screenshot encoding failed: {error}"))?;
         }
         ScreenshotFormat::Jpeg => {
-            let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
-            // image's pure-Rust JPEG encoder defines its quality range as
-            // 1..=100; Chromium permits zero, whose effective result is the
-            // lowest-quality encoding.
-            let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(
-                &mut output,
-                options.quality.max(1),
-            );
-            encoder
-                .write_image(
-                    rgb.as_raw(),
-                    rgb.width(),
-                    rgb.height(),
-                    image::ExtendedColorType::Rgb8,
-                )
-                .map_err(|error| format!("JPEG screenshot encoding failed: {error}"))?;
+            output = encode_jpeg_image(image, options.quality)?;
         }
         ScreenshotFormat::Webp => {
             if options.quality_supplied {
@@ -396,6 +381,109 @@ fn encode_screenshot(
         }
     }
     Ok(output)
+}
+
+#[cfg(feature = "render")]
+pub(crate) fn encode_jpeg_image(image: &image::RgbaImage, quality: u8) -> Result<Vec<u8>, String> {
+    use image::ImageEncoder as _;
+    let mut output = Vec::new();
+    let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+    // image's pure-Rust JPEG encoder defines its quality range as
+    // 1..=100; Chromium permits zero, whose effective result is the
+    // lowest-quality encoding.
+    let encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, quality.max(1));
+    encoder
+        .write_image(
+            rgb.as_raw(),
+            rgb.width(),
+            rgb.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .map_err(|error| format!("JPEG screenshot encoding failed: {error}"))?;
+    Ok(output)
+}
+
+#[cfg(feature = "render")]
+pub(crate) fn render_jpeg_frame(
+    ctx: &mut CdpContext,
+    tab: &str,
+    max_width: Option<u32>,
+    quality: u8,
+) -> Result<Option<Vec<u8>>, String> {
+    let page = if !tab.is_empty() {
+        if let Some(p) = ctx.get_page_mut(tab) {
+            Some(p)
+        } else if let Some(page_id) = ctx.sessions.get(tab).cloned() {
+            ctx.get_page_mut(&page_id)
+        } else {
+            None
+        }
+    } else {
+        ctx.pages.first_mut()
+    };
+
+    let Some(page) = page else {
+        return Ok(None);
+    };
+
+    let animation_sample = page.live_animation_sample();
+    let viewport = page.viewport;
+    let scroll = page
+        .evaluate("[window.scrollX, window.scrollY]")
+        .as_array()
+        .map(|values| {
+            (
+                values.first().and_then(Value::as_f64).unwrap_or(0.0),
+                values.get(1).and_then(Value::as_f64).unwrap_or(0.0),
+            )
+        })
+        .unwrap_or((0.0, 0.0));
+    obscura_browser::validate_capture_region(obscura_browser::CaptureRegion::new(
+        scroll.0 as f32,
+        scroll.1 as f32,
+        viewport.0,
+        viewport.1,
+        1.0,
+    ))
+    .map_err(capture_error_message)?;
+
+    let Some(png) = page.screenshot_with_animation_sample(viewport, animation_sample) else {
+        return Ok(None);
+    };
+
+    let source = image::load_from_memory_with_format(&png, image::ImageFormat::Png)
+        .map_err(|error| format!("render_jpeg_frame could not decode renderer PNG: {error}"))?
+        .to_rgba8();
+
+    let raster = if let Some(max_width) = max_width {
+        if max_width > 0 && max_width < source.width() {
+            let scale = f64::from(max_width) / f64::from(source.width());
+            let height = (f64::from(source.height()) * scale).round().max(1.0) as u32;
+            image::imageops::resize(
+                &source,
+                max_width,
+                height,
+                image::imageops::FilterType::Triangle,
+            )
+        } else {
+            source
+        }
+    } else {
+        source
+    };
+
+    let jpeg = encode_jpeg_image(&raster, quality)?;
+    Ok(Some(jpeg))
+}
+
+#[cfg(not(feature = "render"))]
+pub(crate) fn render_jpeg_frame(
+    _ctx: &mut CdpContext,
+    _tab: &str,
+    _max_width: Option<u32>,
+    _quality: u8,
+) -> Result<Option<Vec<u8>>, String> {
+    Ok(None)
 }
 
 /// Encode a full-page PNG a bounded horizontal strip at a time. The ordinary
@@ -1864,6 +1952,7 @@ mod tests {
             )])),
             body_size: 12,
             timestamp: 42.0,
+            request_body: None,
         };
 
         emit_runtime_network_events(

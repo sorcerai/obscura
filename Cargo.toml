@@ -26,6 +26,7 @@ obscura-cdp = { path = "crates/obscura-cdp" }
 obscura-js = { path = "crates/obscura-js" }
 obscura-mcp = { path = "crates/obscura-mcp" }
 obscura-render = { path = "crates/obscura-render" }
+reach-secrets = { path = "../reach/crates/reach-secrets" }
 
 html5ever = "0.39"
 markup5ever = "0.39"
@@ -56,6 +57,7 @@ thiserror = "2"
 anyhow = "1"
 base64 = "0.22"
 regex = "1"
+http = "1"
 
 [patch.crates-io]
 # Keep the grid shrink-to-fit correction local until it lands upstream.

@@ -50,6 +50,182 @@ const SHUTDOWN_DRAIN_MS: u64 = 3_000;
 const CONNECTION_LIMIT_RESPONSE: &str = "HTTP/1.1 503 Service Unavailable\r\n\
     Content-Length: 0\r\nConnection: close\r\n\
     X-Obscura-Reason: max-connections\r\n\r\n";
+
+#[derive(Clone, Debug)]
+pub struct ViewOptions {
+    pub enabled: bool,
+    pub token: String,
+    pub fps: u8,
+    pub max_viewers: usize,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            token: String::new(),
+            fps: 5,
+            max_viewers: 4,
+        }
+    }
+}
+
+pub(crate) struct ViewServerState {
+    pub tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
+    pub count: Arc<AtomicUsize>,
+    pub token: String,
+    pub fps: u8,
+    pub max_viewers: usize,
+    pub current_tab: Arc<std::sync::RwLock<String>>,
+    pub current_url: Arc<std::sync::RwLock<String>>,
+}
+
+pub fn constant_time_eq(a: &str, b: &str) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.as_bytes()
+        .iter()
+        .zip(b.as_bytes().iter())
+        .fold(0, |acc, (x, y)| acc | (x ^ y))
+        == 0
+}
+
+fn extract_path_and_query(head: &str) -> Option<&str> {
+    let line = head.lines().next()?;
+    let mut parts = line.split_whitespace();
+    if parts.next()? != "GET" {
+        return None;
+    }
+    parts.next()
+}
+
+fn extract_query_param(path: &str, key: &str) -> Option<String> {
+    let (_, query) = path.split_once('?')?;
+    for pair in query.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        let k = kv.next()?;
+        let v = kv.next().unwrap_or("");
+        if k == key {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+const VIEW_HTML: &str = r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obscura Live View</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; background: #111; color: #eee; font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+header { background: #1f1f1f; padding: 10px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #333; }
+header h1 { margin: 0; font-size: 15px; font-weight: 600; color: #fff; }
+#url { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #888; font-size: 13px; font-family: monospace; }
+#status { font-size: 12px; color: #aaa; }
+select { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 2px 6px; font-size: 12px; }
+main { flex: 1; display: flex; justify-content: center; align-items: center; background: #000; overflow: auto; padding: 8px; }
+img { max-width: 100%; max-height: 100%; object-fit: contain; box-shadow: 0 4px 16px rgba(0,0,0,0.6); }
+</style>
+</head>
+<body>
+<header>
+<h1>Obscura</h1>
+<select id="tabSelect"><option value="">Default Tab</option></select>
+<span id="url">Loading...</span>
+<span id="status"></span>
+</header>
+<main>
+<img id="stream" alt="Live Stream" />
+</main>
+<script>
+const p = new URLSearchParams(window.location.search);
+const token = p.get('t') || '';
+let currentTab = p.get('tab') || '';
+const fps = p.get('fps') || '';
+
+function updateStreamSrc() {
+  let streamUrl = '/stream?t=' + encodeURIComponent(token);
+  if (currentTab) streamUrl += '&tab=' + encodeURIComponent(currentTab);
+  if (fps) streamUrl += '&fps=' + encodeURIComponent(fps);
+  document.getElementById('stream').src = streamUrl;
+}
+updateStreamSrc();
+
+const sel = document.getElementById('tabSelect');
+sel.addEventListener('change', (e) => {
+  currentTab = e.target.value;
+  updateStreamSrc();
+});
+
+async function poll() {
+  try {
+    const [statusRes, listRes] = await Promise.all([
+      fetch('/view/status?t=' + encodeURIComponent(token)),
+      fetch('/json/list')
+    ]);
+    if (statusRes.ok) {
+      const data = await statusRes.json();
+      document.getElementById('url').textContent = (data.tab ? '[' + data.tab + '] ' : '') + (data.url || 'about:blank');
+      document.getElementById('status').textContent = data.viewers + ' viewer(s) @ ' + data.fps + ' fps';
+    }
+    if (listRes.ok) {
+      const tabs = await listRes.json();
+      const existing = Array.from(sel.options).map(o => o.value);
+      for (const t of tabs) {
+        if (!existing.includes(t.id)) {
+          const opt = document.createElement('option');
+          opt.value = t.id;
+          opt.textContent = t.title || t.id;
+          sel.appendChild(opt);
+        }
+      }
+    }
+  } catch (e) {}
+}
+setInterval(poll, 2000);
+poll();
+</script>
+</body>
+</html>"#;
+
+async fn serve_mjpeg(
+    mut sock: tokio::net::TcpStream,
+    mut rx: tokio::sync::broadcast::Receiver<Arc<Vec<u8>>>,
+    count: Arc<AtomicUsize>,
+) {
+    use tokio::io::AsyncWriteExt as _;
+
+    count.fetch_add(1, Ordering::Relaxed);
+    struct ViewerGuard(Arc<AtomicUsize>);
+    impl Drop for ViewerGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    let _guard = ViewerGuard(count);
+
+    let head = b"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=obscura\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+    if sock.write_all(head).await.is_err() {
+        return;
+    }
+
+    loop {
+        let frame = match rx.recv().await {
+            Ok(f) => f,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(_) => return,
+        };
+        let part = crate::dispatch::format_mjpeg_part(&frame);
+        if sock.write_all(&part).await.is_err() {
+            return;
+        }
+    }
+}
+
 use crate::types::CdpRequest;
 
 struct CdpMessage {
@@ -183,6 +359,35 @@ pub async fn start_with_serve_options_and_limit(
     allow_private_network: bool,
     max_connections: usize,
 ) -> anyhow::Result<()> {
+    start_with_serve_options_full(
+        port,
+        host,
+        proxy,
+        stealth,
+        user_agent,
+        allow_file_access,
+        storage_dir,
+        allow_private_network,
+        max_connections,
+        None,
+    )
+    .await
+}
+
+/// As `start_with_serve_options_and_limit`, with optional lightweight MJPEG live streaming.
+#[allow(clippy::too_many_arguments)]
+pub async fn start_with_serve_options_full(
+    port: u16,
+    host: &str,
+    proxy: Option<String>,
+    stealth: bool,
+    user_agent: Option<String>,
+    allow_file_access: bool,
+    storage_dir: Option<std::path::PathBuf>,
+    allow_private_network: bool,
+    max_connections: usize,
+    view_options: Option<ViewOptions>,
+) -> anyhow::Result<()> {
     let ip: std::net::IpAddr = host
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid --host '{}': {}", host, e))?;
@@ -211,6 +416,82 @@ pub async fn start_with_serve_options_and_limit(
 
     let (ws_tx, mut ws_rx) = mpsc::channel::<std::net::TcpStream>(MAX_PENDING_WS_HANDOFFS);
 
+    // Live streaming state for /view and /stream
+    let (view_state, viewers_template) = if let Some(ref vo) = view_options {
+        if vo.enabled {
+            let (tx, _rx) = tokio::sync::broadcast::channel::<Arc<Vec<u8>>>(2);
+            let count = Arc::new(AtomicUsize::new(0));
+            let current_tab = Arc::new(std::sync::RwLock::new(String::new()));
+            let current_url = Arc::new(std::sync::RwLock::new(String::new()));
+            let token = if vo.token.is_empty() {
+                uuid::Uuid::new_v4().simple().to_string()
+            } else {
+                vo.token.clone()
+            };
+            let fps = vo.fps.clamp(1, 15);
+            let max_viewers = vo.max_viewers.max(1);
+
+            info!(
+                "Live stream view enabled at http://{}:{}/view?t={}",
+                host, port, token
+            );
+
+            let viewers = dispatch::Viewers {
+                tx: tx.clone(),
+                count: count.clone(),
+                fps,
+                last_hash: 0,
+                tab: None,
+                max_width: None,
+                current_tab: current_tab.clone(),
+                current_url: current_url.clone(),
+            };
+
+            let state = Arc::new(ViewServerState {
+                tx,
+                count,
+                token,
+                fps,
+                max_viewers,
+                current_tab,
+                current_url,
+            });
+
+            (Some(state), Some(viewers))
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
+    let (view_stream_tx, view_stream_rx) = if view_state.is_some() {
+        let (tx, rx) = mpsc::channel::<std::net::TcpStream>(32);
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
+
+    if let (Some(mut rx), Some(vs)) = (view_stream_rx, view_state.clone()) {
+        tokio::spawn(async move {
+            while let Some(std_stream) = rx.recv().await {
+                let tokio_sock = match TcpStream::from_std(std_stream) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("TcpStream::from_std failed for /stream: {}", e);
+                        continue;
+                    }
+                };
+                let frame_rx = vs.tx.subscribe();
+                let count = vs.count.clone();
+                tokio::spawn(serve_mjpeg(tokio_sock, frame_rx, count));
+            }
+        });
+    }
+
+    let accept_view_state = view_state.clone();
+    let accept_view_stream_tx = view_stream_tx.clone();
+
     // Ctrl-C / graceful shutdown coordination.
     let shutdown_flag = Arc::new(AtomicBool::new(false));
     let shutdown_notify = Arc::new(Notify::new());
@@ -218,24 +499,6 @@ pub async fn start_with_serve_options_and_limit(
     // Dedicated accept thread: drains the kernel backlog immediately and
     // handles HTTP endpoints (/json/version, /json, /json/protocol) with
     // blocking I/O so they never contend with the LocalSet's V8 work.
-    //
-    // A connection that is accepted but never sends its request head
-    // (speculative browser preconnects, port probes, slow-loris clients)
-    // must not be able to park this single thread in a blocking read: every
-    // later connection, including CDP clients like Playwright's
-    // connectOverCDP, would then sit in the kernel backlog unanswered until
-    // its own connect timeout (issue #715). The thread therefore never
-    // blocks on a *stream* — undecided connections are parked and re-polled
-    // every ACCEPT_POLL_INTERVAL, and dropped once they outlive
-    // SILENT_CONNECTION_TTL without sending a request head.
-    //
-    // While nothing is parked the thread blocks in accept() itself, the
-    // pre-#715 fast path: zero added latency for the next connection and no
-    // CPU while idle. Blocking on the listener is safe — it waits for the
-    // kernel, not for client bytes. While something is parked, the listener
-    // is drained without blocking at least once per 1 ms poll round, far
-    // above any real connect rate, so the kernel backlog cannot overflow
-    // under a connection burst.
     let accept_flag = shutdown_flag.clone();
     std::thread::Builder::new()
         .name("obscura-cdp-accept".into())
@@ -293,7 +556,14 @@ pub async fn start_with_serve_options_and_limit(
                         PeekStatus::NotReady => pending.push((stream, since)),
                         PeekStatus::Closed => {}
                         PeekStatus::Head(head) => {
-                            if let Err(e) = accept_dispatch(stream, port, &ws_tx, &head) {
+                            if let Err(e) = accept_dispatch(
+                                stream,
+                                port,
+                                &ws_tx,
+                                accept_view_stream_tx.as_ref(),
+                                accept_view_state.as_ref(),
+                                &head,
+                            ) {
                                 if !format!("{}", e).contains("close") {
                                     error!("Accept dispatch error: {}", e);
                                 }
@@ -432,6 +702,7 @@ pub async fn start_with_serve_options_and_limit(
             persistence_lock.clone(),
             shutdown_notify.clone(),
             live_connections.clone(),
+            viewers_template.clone(),
         );
     }
 
@@ -520,6 +791,7 @@ fn run_connection(
     persistence_lock: Arc<std::sync::Mutex<()>>,
     shutdown_notify: Arc<Notify>,
     live_connections: Arc<AtomicUsize>,
+    viewers: Option<dispatch::Viewers>,
 ) {
     // Releases the slot reserved by the accept loop when the thread unwinds,
     // however it exits — clean close, error return, or panic. A plain
@@ -565,6 +837,7 @@ fn run_connection(
                     msg_rx,
                     default_context,
                     shutdown_notify,
+                    viewers,
                 ));
                 if let Err(e) = handle_connection_ws(tokio_stream, msg_tx).await {
                     error!("WebSocket connection error: {}", e);
@@ -740,6 +1013,8 @@ fn accept_dispatch(
     stream: std::net::TcpStream,
     port: u16,
     ws_tx: &mpsc::Sender<std::net::TcpStream>,
+    view_stream_tx: Option<&mpsc::Sender<std::net::TcpStream>>,
+    view_state: Option<&Arc<ViewServerState>>,
     head: &str,
 ) -> anyhow::Result<()> {
     let endpoint = if head.contains("/json/version") {
@@ -760,6 +1035,99 @@ fn accept_dispatch(
         // switch back to blocking mode for the synchronous /json serve.
         let _ = stream.set_nonblocking(false);
         return handle_http_json_blocking(stream, port, ep);
+    }
+
+    let is_view_status = head.starts_with("GET /view/status") || head.contains("GET /view/status");
+    let is_view = !is_view_status && (head.starts_with("GET /view") || head.contains("GET /view"));
+    let is_stream = head.starts_with("GET /stream") || head.contains("GET /stream");
+
+    if is_view_status || is_view || is_stream {
+        use std::io::Write;
+
+        let Some(vs) = view_state else {
+            let mut s = stream;
+            let _ = s.set_nonblocking(false);
+            let _ = s.write_all(
+                b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            );
+            let _ = s.flush();
+            return Ok(());
+        };
+
+        let provided_token = extract_path_and_query(head)
+            .and_then(|pq| extract_query_param(pq, "t"))
+            .unwrap_or_default();
+
+        if !constant_time_eq(&provided_token, &vs.token) {
+            let mut s = stream;
+            let _ = s.set_nonblocking(false);
+            let _ = s.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Type: text/plain\r\nContent-Length: 12\r\nConnection: close\r\n\r\nUnauthorized");
+            let _ = s.flush();
+            return Ok(());
+        }
+
+        if is_view_status {
+            let viewers_count = vs.count.load(Ordering::Relaxed);
+            let url = vs.current_url.read().map(|u| u.clone()).unwrap_or_default();
+            let tab = vs.current_tab.read().map(|t| t.clone()).unwrap_or_default();
+            let json_body = serde_json::json!({
+                "viewers": viewers_count,
+                "fps": vs.fps,
+                "tab": tab,
+                "url": url,
+            })
+            .to_string();
+
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                json_body.len(),
+                json_body
+            );
+            let mut s = stream;
+            let _ = s.set_nonblocking(false);
+            let _ = s.write_all(resp.as_bytes());
+            let _ = s.flush();
+            return Ok(());
+        }
+
+        if is_view {
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                VIEW_HTML.len(),
+                VIEW_HTML
+            );
+            let mut s = stream;
+            let _ = s.set_nonblocking(false);
+            let _ = s.write_all(resp.as_bytes());
+            let _ = s.flush();
+            return Ok(());
+        }
+
+        if is_stream {
+            let current_viewers = vs.count.load(Ordering::Relaxed);
+            if current_viewers >= vs.max_viewers {
+                let mut s = stream;
+                let _ = s.set_nonblocking(false);
+                let _ = s.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain\r\nContent-Length: 17\r\nConnection: close\r\n\r\nToo many viewers\r\n");
+                let _ = s.flush();
+                return Ok(());
+            }
+
+            if let Some(tx) = view_stream_tx {
+                let _ = stream.set_nonblocking(true);
+                let _ = stream.set_nodelay(true);
+                return tx.try_send(stream).map_err(|e| match e {
+                    mpsc::error::TrySendError::Full(_) => {
+                        warn!("View stream handoff channel full; dropping stream connection");
+                        anyhow::anyhow!("view stream channel full")
+                    }
+                    mpsc::error::TrySendError::Closed(_) => {
+                        anyhow::anyhow!("view stream channel closed")
+                    }
+                });
+            }
+            return Ok(());
+        }
     }
     // Fall through: GET request that isn't a /json endpoint → treat as
     // WebSocket upgrade (Chromium DevTools clients issue GET with
@@ -838,8 +1206,12 @@ async fn cdp_processor(
     mut rx: mpsc::UnboundedReceiver<ServerMessage>,
     default_context: Arc<obscura_browser::BrowserContext>,
     shutdown_notify: Arc<Notify>,
+    viewers: Option<dispatch::Viewers>,
 ) {
     let mut ctx = CdpContext::new_with_shared_context(default_context);
+    if let Some(v) = viewers {
+        ctx.enable_viewers(v);
+    }
     let (itx, irx) = mpsc::unbounded_channel::<obscura_js::ops::InterceptedRequest>();
     ctx.intercept_tx = Some(itx);
     let mut intercept_rx: Option<mpsc::UnboundedReceiver<obscura_js::ops::InterceptedRequest>> =
@@ -867,6 +1239,16 @@ async fn cdp_processor(
     // a bounded 30 Hz opportunity on this connection's owning LocalSet.
     let mut screencast_tick = tokio::time::interval(tokio::time::Duration::from_millis(33));
     screencast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    let view_fps = ctx
+        .viewers
+        .as_ref()
+        .map(|v| v.fps.clamp(1, 15))
+        .unwrap_or(5);
+    let mut view_tick =
+        tokio::time::interval(tokio::time::Duration::from_millis(1000 / (view_fps as u64)));
+    view_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     let mut connection_reply_tx: Option<mpsc::UnboundedSender<String>> = None;
     // A real browser renderer continues servicing timers, networking, posted
     // tasks, and animation callbacks while its DevTools client is silent. Keep
@@ -983,6 +1365,50 @@ async fn cdp_processor(
                         &mut ctx,
                         connection_reply_tx.as_ref(),
                     ).await;
+                    None
+                },
+                _ = view_tick.tick(), if dispatch::viewers_active(&ctx) => {
+                    let view_params = ctx.viewers.as_ref().map(|v| {
+                        (
+                            v.tab.clone().unwrap_or_else(|| ctx.active_tab()),
+                            v.max_width,
+                            v.last_hash,
+                        )
+                    });
+                    if let Some((tab, max_width, last_hash)) = view_params {
+                        let frame_res = crate::domains::page::render_jpeg_frame(
+                            &mut ctx,
+                            &tab,
+                            max_width,
+                            60,
+                        );
+                        let page_info = ctx.get_page(&tab).map(|p| {
+                            (
+                                p.url
+                                    .as_ref()
+                                    .map(|url| url.to_string())
+                                    .unwrap_or_else(|| "about:blank".to_string()),
+                                p.id.clone(),
+                            )
+                        });
+                        if let Some(v) = ctx.viewers.as_mut() {
+                            if let Ok(Some(frame)) = frame_res {
+                                let h = dispatch::fnv1a64(&frame);
+                                if h != last_hash {
+                                    v.last_hash = h;
+                                    let _ = v.tx.send(Arc::new(frame));
+                                }
+                            }
+                            if let Some((url, id)) = page_info {
+                                if let Ok(mut u) = v.current_url.write() {
+                                    *u = url;
+                                }
+                                if let Ok(mut t) = v.current_tab.write() {
+                                    *t = id;
+                                }
+                            }
+                        }
+                    }
                     None
                 }
             }
@@ -1871,6 +2297,7 @@ mod tests {
                     server_rx,
                     default_context,
                     shutdown,
+                    None,
                 ));
 
                 server_tx
@@ -2225,5 +2652,144 @@ mod tests {
             initial_data,
             "RAF-driven paint must capture the updated visible state"
         );
+    }
+
+    #[test]
+    fn test_mjpeg_part_framing_bytes() {
+        let frame = b"abc";
+        let part = crate::dispatch::format_mjpeg_part(frame);
+        assert_eq!(
+            part,
+            b"--obscura\r\nContent-Type: image/jpeg\r\nContent-Length: 3\r\n\r\nabc\r\n"
+        );
+    }
+
+    #[test]
+    fn test_constant_time_eq() {
+        assert!(super::constant_time_eq("secret123", "secret123"));
+        assert!(!super::constant_time_eq("secret123", "secret124"));
+        assert!(!super::constant_time_eq("secret123", "secret12"));
+        assert!(!super::constant_time_eq("", "secret"));
+    }
+
+    #[test]
+    fn test_extract_query_param() {
+        assert_eq!(
+            super::extract_query_param("/view?t=token123&fps=5", "t"),
+            Some("token123".to_string())
+        );
+        assert_eq!(
+            super::extract_query_param("/view?t=token123&fps=5", "fps"),
+            Some("5".to_string())
+        );
+        assert_eq!(super::extract_query_param("/view?t=token123", "tab"), None);
+    }
+
+    #[test]
+    fn test_view_auth_wrong_token_and_viewer_cap() {
+        use std::io::Read as _;
+        use std::net::TcpListener;
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(2);
+        let count = Arc::new(AtomicUsize::new(0));
+        let vs = Arc::new(super::ViewServerState {
+            tx,
+            count: count.clone(),
+            token: "valid-token".to_string(),
+            fps: 5,
+            max_viewers: 1,
+            current_tab: Arc::new(std::sync::RwLock::new("page-1".to_string())),
+            current_url: Arc::new(std::sync::RwLock::new("https://example.com".to_string())),
+        });
+
+        let (ws_tx, _ws_rx) = tokio::sync::mpsc::channel(1);
+        let (view_tx, _view_rx) = tokio::sync::mpsc::channel(1);
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // 1. Wrong token -> 401
+        let mut client1 = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server1, _) = listener.accept().unwrap();
+        let head1 = "GET /view?t=wrong-token HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        super::accept_dispatch(server1, port, &ws_tx, Some(&view_tx), Some(&vs), head1).unwrap();
+        let mut resp1 = String::new();
+        client1.read_to_string(&mut resp1).unwrap();
+        assert!(
+            resp1.starts_with("HTTP/1.1 401 Unauthorized"),
+            "expected 401, got: {resp1}"
+        );
+
+        // 2. Valid token /view -> 200 HTML
+        let mut client2 = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server2, _) = listener.accept().unwrap();
+        let head2 = "GET /view?t=valid-token HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        super::accept_dispatch(server2, port, &ws_tx, Some(&view_tx), Some(&vs), head2).unwrap();
+        let mut resp2 = String::new();
+        client2.read_to_string(&mut resp2).unwrap();
+        assert!(
+            resp2.starts_with("HTTP/1.1 200 OK"),
+            "expected 200, got: {resp2}"
+        );
+        assert!(resp2.contains("<!DOCTYPE html>"));
+
+        // 3. Valid token /view/status -> 200 JSON
+        let mut client3 = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server3, _) = listener.accept().unwrap();
+        let head3 = "GET /view/status?t=valid-token HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        super::accept_dispatch(server3, port, &ws_tx, Some(&view_tx), Some(&vs), head3).unwrap();
+        let mut resp3 = String::new();
+        client3.read_to_string(&mut resp3).unwrap();
+        assert!(
+            resp3.starts_with("HTTP/1.1 200 OK"),
+            "expected 200, got: {resp3}"
+        );
+        let status_json: serde_json::Value =
+            serde_json::from_str(resp3.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(status_json["url"], "https://example.com");
+        assert_eq!(status_json["tab"], "page-1");
+        assert_eq!(status_json["viewers"], 0);
+        assert_eq!(status_json["fps"], 5);
+
+        // 4. Viewer cap reached -> 503
+        count.store(1, std::sync::atomic::Ordering::Relaxed);
+        let mut client4 = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server4, _) = listener.accept().unwrap();
+        let head4 = "GET /stream?t=valid-token HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        super::accept_dispatch(server4, port, &ws_tx, Some(&view_tx), Some(&vs), head4).unwrap();
+        let mut resp4 = String::new();
+        client4.read_to_string(&mut resp4).unwrap();
+        assert!(
+            resp4.starts_with("HTTP/1.1 503 Service Unavailable"),
+            "expected 503, got: {resp4}"
+        );
+    }
+
+    #[test]
+    fn test_zero_viewers_no_render() {
+        let default_context = crate::dispatch::CdpContext::new().default_context;
+        let mut ctx = crate::dispatch::CdpContext::new_with_shared_context(default_context);
+        assert!(!crate::dispatch::viewers_active(&ctx));
+
+        let (tx, _rx) = tokio::sync::broadcast::channel(2);
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let viewers = crate::dispatch::Viewers {
+            tx,
+            count: count.clone(),
+            fps: 5,
+            last_hash: 0,
+            tab: None,
+            max_width: None,
+            current_tab: std::sync::Arc::new(std::sync::RwLock::new(String::new())),
+            current_url: std::sync::Arc::new(std::sync::RwLock::new(String::new())),
+        };
+        ctx.enable_viewers(viewers);
+        // With count == 0, viewers_active must be false (0 renders, 0 CPU)!
+        assert!(!crate::dispatch::viewers_active(&ctx));
+
+        count.store(1, std::sync::atomic::Ordering::Relaxed);
+        assert!(crate::dispatch::viewers_active(&ctx));
     }
 }

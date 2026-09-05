@@ -4,7 +4,9 @@
 #![recursion_limit = "512"]
 
 pub mod diff;
+pub mod escalate;
 pub mod http;
+pub mod secrets;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,9 +82,9 @@ pub struct BrowserState {
     tabs: std::collections::BTreeMap<String, Page>,
     /// The tab id every tool call operates on. None means there are no
     /// open tabs; the next page_mut() call creates one.
-    active_tab: Option<String>,
+    pub active_tab: Option<String>,
     tab_counter: u32,
-    context: Arc<BrowserContext>,
+    pub context: Arc<BrowserContext>,
     user_agent: Option<String>,
     console_messages: Vec<String>,
     /// Element-ref table from the last `browser_snapshot` on the ACTIVE
@@ -92,6 +94,8 @@ pub struct BrowserState {
     /// the next snapshot call.
     interactive_refs: HashMap<String, NodeId>,
     pub baselines: std::collections::HashMap<u32, diff::DiffBaseline>,
+    pub secret_filled_gen: u64,
+    pub escalations: std::collections::HashMap<String, escalate::EscalationState>,
 }
 
 impl BrowserState {
@@ -109,7 +113,20 @@ impl BrowserState {
             console_messages: Vec::new(),
             interactive_refs: HashMap::new(),
             baselines: std::collections::HashMap::new(),
+            secret_filled_gen: 0,
+            escalations: std::collections::HashMap::new(),
         }
+    }
+
+    pub fn has_active_tab(&self) -> bool {
+        self.active_tab.is_some()
+    }
+
+    pub fn page(&self) -> Option<&Page> {
+        self.active_tab
+            .as_ref()
+            .and_then(|id| self.tabs.get(id))
+            .or_else(|| self.tabs.values().next())
     }
 
     pub(crate) fn active_tab_id_num(&mut self) -> u32 {
@@ -125,7 +142,7 @@ impl BrowserState {
     /// active tab's Page. Auto-creates a default tab if none exist so
     /// every legacy single-page tool continues to work without
     /// requiring an explicit browser_tab_new.
-    fn page_mut(&mut self) -> &mut Page {
+    pub fn page_mut(&mut self) -> &mut Page {
         if self.active_tab.is_none() {
             self.tab_counter += 1;
             let id = format!("tab-{}", self.tab_counter);
@@ -200,6 +217,7 @@ impl BrowserState {
             .map_err(|error| error.to_string())?;
         if navigated {
             self.interactive_refs.clear();
+            self.secret_filled_gen = 0;
             let tab_id = self.active_tab_id_num();
             if let Some(b) = self.baselines.get_mut(&tab_id) {
                 b.lines.clear();
@@ -225,7 +243,7 @@ impl BrowserState {
     /// which an agent does, wins that race every time. The reply is also
     /// written before any pump turn could run, so the tool would answer
     /// "Clicked" while the request has not left the process.
-    async fn settle_synthetic_navigation(&mut self) -> Result<(), String> {
+    pub async fn settle_synthetic_navigation(&mut self) -> Result<(), String> {
         let navigated = self
             .page_mut()
             .process_pending_navigation()
@@ -234,6 +252,7 @@ impl BrowserState {
         if navigated {
             // The ref table names elements in a document that has gone away.
             self.interactive_refs.clear();
+            self.secret_filled_gen = 0;
             let tab_id = self.active_tab_id_num();
             if let Some(b) = self.baselines.get_mut(&tab_id) {
                 b.lines.clear();
@@ -253,7 +272,7 @@ impl BrowserState {
     /// interactable, so the attribute survives across calls as long as
     /// the page isn't re-rendered without it. Returns `Err` if the ref
     /// hasn't been registered (caller must call browser_snapshot first).
-    fn ref_to_selector(&self, r: &str) -> Result<String, String> {
+    pub(crate) fn ref_to_selector(&self, r: &str) -> Result<String, String> {
         if !self.interactive_refs.contains_key(r) {
             return Err(format!(
                 "unknown ref '{r}'; call browser_snapshot first to refresh the ref table"
@@ -814,6 +833,80 @@ fn handle_tools_list(id: Value) -> RpcResponse {
                     },
                     "additionalProperties": false
                 }
+            }),
+            json!({
+                "name": "browser_fill_vault",
+                "description": "Fill credentials from reach vault into the page after verifying origin",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "domain": { "type": "string", "description": "Target domain for credential lookup and origin binding" },
+                        "username": { "type": "string", "description": "Selector for the username input field" },
+                        "password": { "type": "string", "description": "Selector for the password input field" },
+                        "totp": { "type": "string", "description": "Optional selector for the TOTP 2FA input field" },
+                        "submit": { "type": "boolean", "description": "Whether to submit the form after filling" }
+                    },
+                    "required": ["domain"]
+                }
+            }),
+            json!({
+                "name": "browser_fill_card",
+                "description": "Fill virtual card details into payment forms after verifying origin",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "card_id": { "type": "string", "description": "Virtual card ID in the card store" },
+                        "number": { "type": "string", "description": "Selector for card number input field" },
+                        "exp_month": { "type": "string", "description": "Selector for expiration month input field" },
+                        "exp_year": { "type": "string", "description": "Selector for expiration year input field" },
+                        "cvv": { "type": "string", "description": "Selector for CVV / CVC input field" },
+                        "expiry_combined": { "type": "string", "description": "Selector for combined expiration MM/YY input field" }
+                    },
+                    "required": ["card_id"]
+                }
+            }),
+            json!({
+                "name": "browser_escalate",
+                "description": "Escalate a roadblock (Cloudflare challenge, Turnstile, CAPTCHA, etc.) to Reach headed handoff so a human or headed agent can solve it.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "reach_url": {
+                            "type": "string",
+                            "description": "Reach server base URL (default: http://127.0.0.1:8402)"
+                        },
+                        "reason": {
+                            "type": "string",
+                            "description": "Reason for escalation"
+                        },
+                        "timeout_secs": {
+                            "type": "integer",
+                            "description": "Handoff timeout in seconds (default: 900)"
+                        },
+                        "url": {
+                            "type": "string",
+                            "description": "URL to hand off (default: active tab URL)"
+                        },
+                        "task": {
+                            "type": "string",
+                            "description": "Task identifier for lease owner"
+                        }
+                    }
+                }
+            }),
+            json!({
+                "name": "browser_escalate_resume",
+                "description": "Check if human intervention on Reach is complete, reload session cookies, release Reach lease, and resume navigation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "escalation_id": {
+                            "type": "string",
+                            "description": "Escalation ID returned by browser_escalate"
+                        }
+                    },
+                    "required": ["escalation_id"]
+                }
             })
     ]).as_array().cloned().expect("MCP tool list must be an array");
 
@@ -925,6 +1018,10 @@ async fn handle_tool_call(id: Value, params: &Value, state: &mut BrowserState) -
         "browser_set_storage_state" => tool_set_storage_state(args, state),
         "browser_diff" => tool_diff(args, state),
         "browser_wait_for_change" => tool_wait_for_change(args, state).await,
+        "browser_fill_vault" => secrets::tool_fill_vault(args, state).await,
+        "browser_fill_card" => secrets::tool_fill_card(args, state).await,
+        "browser_escalate" => escalate::tool_escalate(args, state).await,
+        "browser_escalate_resume" => escalate::tool_escalate_resume(args, state).await,
         _ => Err(format!("Unknown tool: {name}")),
     };
 
@@ -1147,6 +1244,7 @@ async fn tool_navigate(args: &Value, state: &mut BrowserState) -> Result<String,
     let summary = format!("Navigated to {} — \"{}\"", new_url, page_title);
     // DOM changed — invalidate the ref table. Next snapshot will rebuild.
     state.interactive_refs.clear();
+    state.secret_filled_gen = 0;
     Ok(summary)
 }
 
@@ -1339,6 +1437,16 @@ async fn tool_evaluate(args: &Value, state: &mut BrowserState) -> Result<String,
         .and_then(Value::as_str)
         .ok_or("Missing expression parameter")?;
 
+    if state.secret_filled_gen > 0 {
+        static EVAL_BLOCKED_RE: std::sync::LazyLock<regex::Regex> =
+            std::sync::LazyLock::new(|| {
+                regex::Regex::new(r"\.value\b|FormData|__obscura_setFieldValue").unwrap()
+            });
+        if EVAL_BLOCKED_RE.is_match(expression) {
+            return Err("evaluate disabled after vault fill until navigation".to_string());
+        }
+    }
+
     let result = state.page_mut().evaluate(expression);
     state.settle_synthetic_navigation().await?;
     Ok(match &result {
@@ -1386,7 +1494,9 @@ async fn tool_wait_for(args: &Value, state: &mut BrowserState) -> Result<String,
 }
 
 fn tool_network_requests(state: &mut BrowserState) -> Result<String, String> {
+    let is_redacted = state.secret_filled_gen > 0;
     let page = state.page_mut();
+    page.sync_js_network_events();
     let events = &page.network_events;
 
     if events.is_empty() {
@@ -1395,7 +1505,22 @@ fn tool_network_requests(state: &mut BrowserState) -> Result<String, String> {
 
     let lines: Vec<String> = events
         .iter()
-        .map(|e| format!("[{}] {} {} ({}B)", e.status, e.method, e.url, e.body_size))
+        .map(|e| {
+            let body_repr = match &e.request_body {
+                Some(b) => {
+                    if is_redacted {
+                        format!(" <redacted: {} bytes>", b.len())
+                    } else {
+                        format!(" {b}")
+                    }
+                }
+                None => String::new(),
+            };
+            format!(
+                "[{}] {} {} ({}B){}",
+                e.status, e.method, e.url, e.body_size, body_repr
+            )
+        })
         .collect();
 
     Ok(lines.join("\n"))
@@ -1510,7 +1635,9 @@ fn tool_interactive_elements(args: &Value, state: &mut BrowserState) -> Result<S
         var out = [];
         for (var i = 0; i < els.length && out.length < {limit}; i++) {{
             var e = els[i];
-            var label = (e.innerText || e.textContent || e.getAttribute('aria-label') || e.getAttribute('placeholder') || e.getAttribute('value') || e.getAttribute('name') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+            var isSecret = e.getAttribute('data-obscura-secret') === '1';
+            var val = isSecret ? '•••' : (e.value || e.getAttribute('value') || '');
+            var label = isSecret ? '•••' : (e.innerText || e.textContent || e.getAttribute('aria-label') || e.getAttribute('placeholder') || val || e.getAttribute('name') || '').trim().replace(/\s+/g, ' ').slice(0, 80);
             var role = e.getAttribute('role') || '';
             var typeAttr = e.getAttribute('type') || '';
             out.push({{

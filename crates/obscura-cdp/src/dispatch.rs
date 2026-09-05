@@ -48,6 +48,45 @@ pub(crate) struct ExecutionContextRecord {
     pub is_default: bool,
 }
 
+#[derive(Clone)]
+pub struct Viewers {
+    pub tx: tokio::sync::broadcast::Sender<Arc<Vec<u8>>>,
+    pub count: Arc<std::sync::atomic::AtomicUsize>,
+    pub fps: u8,
+    pub last_hash: u64,
+    pub tab: Option<String>,
+    pub max_width: Option<u32>,
+    pub current_tab: Arc<std::sync::RwLock<String>>,
+    pub current_url: Arc<std::sync::RwLock<String>>,
+}
+
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+pub fn format_mjpeg_part(frame: &[u8]) -> Vec<u8> {
+    let mut part = format!(
+        "--obscura\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\n\r\n",
+        frame.len()
+    )
+    .into_bytes();
+    part.extend_from_slice(frame);
+    part.extend_from_slice(b"\r\n");
+    part
+}
+
+pub fn viewers_active(ctx: &CdpContext) -> bool {
+    ctx.viewers
+        .as_ref()
+        .map(|v| v.count.load(std::sync::atomic::Ordering::Relaxed) > 0)
+        .unwrap_or(false)
+}
+
 pub struct CdpContext {
     pub pages: Vec<Page>,
     pub sessions: HashMap<String, String>, // session_id -> page_id
@@ -123,6 +162,7 @@ pub struct CdpContext {
     /// process-wide lock, so connections run in parallel (measured ~2x at
     /// concurrency 2, ~3x at 4) instead of serializing all V8 on one mutex.
     pub v8_lock: Arc<tokio::sync::Mutex<()>>,
+    pub viewers: Option<Viewers>,
 }
 
 impl CdpContext {
@@ -200,6 +240,7 @@ impl CdpContext {
             page_isolated_worlds: HashMap::new(),
             io_streams: crate::domains::io::IoStreamStore::default(),
             v8_lock: Arc::new(tokio::sync::Mutex::new(())),
+            viewers: None,
         }
     }
 
@@ -321,6 +362,14 @@ impl CdpContext {
 
     pub fn get_page_mut(&mut self, id: &str) -> Option<&mut Page> {
         self.pages.iter_mut().find(|p| p.id == id)
+    }
+
+    pub fn enable_viewers(&mut self, viewers: Viewers) {
+        self.viewers = Some(viewers);
+    }
+
+    pub fn active_tab(&self) -> String {
+        self.pages.first().map(|p| p.id.clone()).unwrap_or_default()
     }
 
     pub(crate) fn refresh_runtime_event_collection(&self, page_id: &str) {

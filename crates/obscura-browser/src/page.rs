@@ -3557,11 +3557,17 @@ impl Page {
                     robots_url.set_path("/robots.txt");
                     robots_url.set_query(None);
                     robots_url.set_fragment(None);
-                    let body = match self
-                        .http_client
-                        .fetch_with_callbacks(&robots_url, Some(&self.callbacks))
-                        .await
-                    {
+                    // The stealth client when there is one: robots.txt on
+                    // reqwest showed each new host a non-Chrome TLS signature
+                    // right before the page.
+                    #[cfg(feature = "stealth")]
+                    let fetched = match &self.stealth_client {
+                        Some(client) => client.fetch_with_callbacks(&robots_url, Some(&self.callbacks)).await,
+                        None => self.http_client.fetch_with_callbacks(&robots_url, Some(&self.callbacks)).await,
+                    };
+                    #[cfg(not(feature = "stealth"))]
+                    let fetched = self.http_client.fetch_with_callbacks(&robots_url, Some(&self.callbacks)).await;
+                    let body = match fetched {
                         Ok(resp) if resp.status == 200 => {
                             String::from_utf8_lossy(&resp.body).into_owned()
                         }

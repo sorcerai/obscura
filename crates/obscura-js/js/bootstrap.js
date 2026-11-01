@@ -8304,8 +8304,12 @@ function _uaBrands() {
     {brand: 'Chromium', version: String(seed)},
     {brand: 'Google Chrome', version: String(seed)},
   ];
+  // Chromium places brand k at position p[k], not brand p[k] at position k.
+  // The two only differ for majors 147 and 148 (seed % 6 of 3 and 4).
   var p = _BRAND_PERMS[seed % 6];
-  return [ordered[p[0]], ordered[p[1]], ordered[p[2]]];
+  var out = [];
+  out[p[0]] = ordered[0]; out[p[1]] = ordered[1]; out[p[2]] = ordered[2];
+  return out;
 }
 
 // Fingerprint surfaces (UA, plugins, webdriver, etc.) live on the prototype

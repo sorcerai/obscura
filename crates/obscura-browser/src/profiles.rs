@@ -73,7 +73,11 @@ pub fn random_profile() -> &'static BrowserProfile {
 /// timezone fingerprint, so rotation is opt-in:
 ///   OBSCURA_PROFILE=<index>   pin a specific profile from PROFILES
 ///   OBSCURA_ROTATE_PROFILE=1  pick a random profile per context
+/// An `OBSCURA_PROFILE_FILE` device takes precedence over both.
 pub fn select_profile() -> &'static BrowserProfile {
+    if let Some(device) = device_profile() {
+        return device;
+    }
     if let Some(idx) = std::env::var("OBSCURA_PROFILE")
         .ok()
         .as_deref()
@@ -88,6 +92,21 @@ pub fn select_profile() -> &'static BrowserProfile {
         return random_profile();
     }
     &PROFILES[0]
+}
+
+/// The `OBSCURA_PROFILE_FILE` device as a `BrowserProfile`, built once.
+fn device_profile() -> Option<&'static BrowserProfile> {
+    static DEVICE: std::sync::OnceLock<Option<BrowserProfile>> = std::sync::OnceLock::new();
+    DEVICE
+        .get_or_init(|| {
+            obscura_net::profile_file::active().map(|d| BrowserProfile {
+                user_agent: Box::leak(d.user_agent().into_boxed_str()),
+                platform: d.os.navigator_platform(),
+                ua_platform: d.os.ua_platform(),
+                ua_platform_version: Box::leak(d.platform_version.clone().into_boxed_str()),
+            })
+        })
+        .as_ref()
 }
 
 fn env_enabled(key: &str) -> bool {

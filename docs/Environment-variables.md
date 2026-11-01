@@ -129,6 +129,36 @@ Pin a specific browser profile from the built-in pool by index (`0`-based). Each
 OBSCURA_PROFILE=2 obscura serve
 ```
 
+### `OBSCURA_PROFILE_FILE`
+
+Path to a JSON file describing one device. It replaces the built-in profiles, and with the `stealth` build it also replaces the fixed Windows Chrome 145 identity.
+
+The file names the operating system and the Chrome major. The UA string, `navigator.platform`, `userAgentData`, `Sec-CH-UA-Platform` and the TLS/HTTP2 emulation are derived from those two, so they can't contradict each other. The other fields are checked when the process starts, and any problem stops it before it serves a request.
+
+The checks:
+- `chrome` must be one the transport can emulate (143-148).
+- `platform_version` must fit the OS.
+- `device_memory` must be a value Chrome reports.
+- `timezone` must be an IANA zone and `locale` must look like `en-US`.
+
+The screen, `hardwareConcurrency`, `deviceMemory` and the noise seed then stay the same on every page instead of being re-drawn per document. `timezone` sets `TZ`. An `OBSCURA_TIMEZONE` that disagrees with it is refused.
+
+The user agent is refused the same way. A different `--user-agent` stops the process. A different `Network.setUserAgentOverride` or `Emulation.setUserAgentOverride` returns a CDP error. `/json/version` and `Browser.getVersion` report the profile's user agent, so a client that copies it passes the check.
+
+```json
+{
+  "os": "macos", "chrome": 146, "platform_version": "15.6.1",
+  "screen": [1512, 982], "hardware_concurrency": 10, "device_memory": 8,
+  "timezone": "America/Chicago", "locale": "en-US", "seed": 424242
+}
+```
+
+```bash
+OBSCURA_PROFILE_FILE=~/.config/obscura/device.json obscura serve --stealth
+```
+
+`tools/profile-capture/index.html` writes this file from a real Chrome.
+
 ### `OBSCURA_ROTATE_PROFILE`
 
 Opt into picking a random profile per browser context instead of the stable default. Leave it off when you pin a TLS fingerprint, proxy region, or timezone, since a rotated profile would no longer match those.

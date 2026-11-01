@@ -721,6 +721,8 @@ var _fpCache = null;
 // Parenthesized helpers retain compiled bytecode in the startup snapshot.
 const _getFp = (function _getFp() {
   if (_fpCache) return _fpCache;
+  // OBSCURA_PROFILE_FILE: one device's screen, validated host-side.
+  const _prof = globalThis.__obscura_fp_profile;
   const _uaPlat = globalThis.__obscura_ua_platform || 'Windows';
   const isMac = _uaPlat === 'macOS';
   const isLinux = _uaPlat === 'Linux';
@@ -783,7 +785,7 @@ const _getFp = (function _getFp() {
     compRatio: 12 + (_fpRand(104) - 0.5) * 4,
     batteryLevel: 0.5 + _fpRand(200) * 0.5,
     batteryCharging: _fpRand(201) > 0.3,
-    screen: screenPool[Math.floor(_fpRand(300) * screenPool.length)],
+    screen: _prof ? _prof.screen : screenPool[Math.floor(_fpRand(300) * screenPool.length)],
     canvasFingerprint: cfp,
   };
   return _fpCache;
@@ -18784,7 +18786,11 @@ globalThis.__obscura_init = (function() {
     _realmFrameId);
   _browserPostedTaskWakePending = false;
   for (const queue of _browserPostedTaskQueues) _browserPostedTaskDiscardQueue(queue);
-  _fpSeed = Date.now() ^ (Math.random() * 0xFFFFFFFF >>> 0);
+  // A device profile keeps one seed, so canvas and audio noise match across
+  // documents the way a real device's hashes do; otherwise draw a new one.
+  _fpSeed = globalThis.__obscura_fp_profile
+    ? (globalThis.__obscura_fp_profile.seed | 0)
+    : Date.now() ^ (Math.random() * 0xFFFFFFFF >>> 0);
   _fpCache = null;
   // A real navigation just completed (this runs after set_url), so drop any
   // URL a location setter previewed synchronously and let document_url drive
@@ -18826,9 +18832,12 @@ globalThis.__obscura_init = (function() {
   globalThis.outerWidth = sw; globalThis.outerHeight = sh - 40;
 
   var hwValues = globalThis.__obscura_stealth ? [4, 6, 8, 12, 16] : [2, 4, 6, 8, 12, 16];
-  globalThis.__obscura_hw = hwValues[Math.floor(_fpRand(400) * hwValues.length)];
   var memValues = globalThis.__obscura_stealth ? [4, 8] : [0.25, 0.5, 1, 2, 4, 8];
-  globalThis.__obscura_mem = memValues[Math.floor(_fpRand(401) * memValues.length)];
+  const _devProf = globalThis.__obscura_fp_profile;
+  globalThis.__obscura_hw = _devProf ? _devProf.hardwareConcurrency
+    : hwValues[Math.floor(_fpRand(400) * hwValues.length)];
+  globalThis.__obscura_mem = _devProf ? _devProf.deviceMemory
+    : memValues[Math.floor(_fpRand(401) * memValues.length)];
 
   const timing = {};
   for (const name of Object.keys(JSON.parse(_dom('performance_timing')))) {

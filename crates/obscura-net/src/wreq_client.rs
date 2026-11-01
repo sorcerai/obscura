@@ -72,6 +72,60 @@ pub const STEALTH_UA_PLATFORM: &str = "Windows";
 #[cfg(feature = "stealth")]
 pub const STEALTH_UA_PLATFORM_VERSION: &str = "15.0.0";
 
+/// The identity the stealth transport puts on the wire, which navigator and
+/// the client hints must repeat: the `OBSCURA_PROFILE_FILE` device when one is
+/// set, otherwise the built-in Windows Chrome 145.
+#[cfg(feature = "stealth")]
+pub struct StealthIdentity {
+    pub user_agent: String,
+    pub navigator_platform: &'static str,
+    pub ua_platform: &'static str,
+    pub ua_platform_version: String,
+}
+
+#[cfg(feature = "stealth")]
+pub fn stealth_identity() -> StealthIdentity {
+    match crate::profile_file::active() {
+        Some(p) => StealthIdentity {
+            user_agent: p.user_agent(),
+            navigator_platform: p.os.navigator_platform(),
+            ua_platform: p.os.ua_platform(),
+            ua_platform_version: p.platform_version.clone(),
+        },
+        None => StealthIdentity {
+            user_agent: STEALTH_USER_AGENT.to_string(),
+            navigator_platform: STEALTH_NAVIGATOR_PLATFORM,
+            ua_platform: STEALTH_UA_PLATFORM,
+            ua_platform_version: STEALTH_UA_PLATFORM_VERSION.to_string(),
+        },
+    }
+}
+
+/// The wreq emulation target for the active identity. The profile file only
+/// accepts Chrome majors in `profile_file::SUPPORTED_CHROME`.
+#[cfg(feature = "stealth")]
+fn emulation_target() -> (wreq_util::Profile, wreq_util::Platform) {
+    use crate::profile_file::Os;
+    use wreq_util::{Platform, Profile};
+    let Some(p) = crate::profile_file::active() else {
+        return (Profile::Chrome145, Platform::Windows);
+    };
+    let profile = match p.chrome {
+        143 => Profile::Chrome143,
+        144 => Profile::Chrome144,
+        146 => Profile::Chrome146,
+        147 => Profile::Chrome147,
+        148 => Profile::Chrome148,
+        _ => Profile::Chrome145,
+    };
+    let platform = match p.os {
+        Os::Windows => Platform::Windows,
+        Os::Macos => Platform::MacOS,
+        Os::Linux => Platform::Linux,
+    };
+    (profile, platform)
+}
+
 #[cfg(feature = "stealth")]
 fn tracker_blocking_enabled(value: Option<&str>) -> bool {
     !matches!(
@@ -215,9 +269,10 @@ impl StealthHttpClient {
         proxy_url: Option<&str>,
         allow_private_network: bool,
     ) -> Self {
+        let (profile, platform) = emulation_target();
         let emulation_opts = wreq_util::Emulation::builder()
-            .profile(wreq_util::Profile::Chrome145)
-            .platform(wreq_util::Platform::Windows)
+            .profile(profile)
+            .platform(platform)
             .build();
 
         let mut builder = wreq::Client::builder()

@@ -158,6 +158,9 @@ pub async fn handle(
                 .get("userAgent")
                 .and_then(Value::as_str)
                 .ok_or("Emulation.setUserAgentOverride requires userAgent")?;
+            if !user_agent.is_empty() {
+                obscura_net::profile_file::check_user_agent(user_agent)?;
+            }
             let accept_language = params.get("acceptLanguage").and_then(Value::as_str);
             let http_client = ctx
                 .get_session_page(session_id)

@@ -1720,7 +1720,8 @@ impl Page {
     pub fn set_locale_override(&mut self, locale: Option<String>) {
         self.locale_override = locale.filter(|locale| !locale.is_empty());
         if let Some(js) = &mut self.js {
-            js.set_locale(self.locale_override.as_deref().unwrap_or("en-US"));
+            let default = obscura_net::profile_file::active().map_or("en-US", |d| d.locale.as_str());
+            js.set_locale(self.locale_override.as_deref().unwrap_or(default));
         }
     }
 
@@ -1935,11 +1936,14 @@ impl Page {
         #[cfg(feature = "stealth")]
         if self.stealth_client.is_some() {
             rt.set_stealth(true);
-            rt.set_user_agent(self.context.user_agent_override.as_deref().unwrap_or(obscura_net::STEALTH_USER_AGENT));
+            let identity = obscura_net::stealth_identity();
+            rt.set_user_agent(
+                self.context.user_agent_override.as_deref().unwrap_or(&identity.user_agent),
+            );
             rt.set_platform(
-                obscura_net::STEALTH_NAVIGATOR_PLATFORM,
-                obscura_net::STEALTH_UA_PLATFORM,
-                obscura_net::STEALTH_UA_PLATFORM_VERSION,
+                identity.navigator_platform,
+                identity.ua_platform,
+                &identity.ua_platform_version,
             );
         } else {
             if let Ok(ua) = self.http_client.user_agent.try_read() {
@@ -1962,7 +1966,15 @@ impl Page {
                 &self.context.ua_platform_version,
             );
         }
-        if let Some(locale) = &self.locale_override {
+        let device = obscura_net::profile_file::active();
+        if let Some(device) = device {
+            rt.set_fingerprint_profile(&device.fingerprint_json());
+        }
+        if let Some(locale) = self
+            .locale_override
+            .as_deref()
+            .or(device.map(|d| d.locale.as_str()))
+        {
             rt.set_locale(locale);
         }
         if let Some((lat, lon)) = env_geolocation() {

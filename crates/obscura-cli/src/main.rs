@@ -433,6 +433,16 @@ async fn run_cli() -> anyhow::Result<()> {
         .ok()
         .filter(|s| !s.trim().is_empty());
     if let Some(device) = &device {
+        // Only the stealth transport emulates Chrome's TLS and carries the
+        // profile on every request. Without it a profile would claim Chrome
+        // over a rustls handshake, and scripted fetches send a Linux UA.
+        if !(cfg!(feature = "stealth") && args.stealth) {
+            eprintln!(
+                "{} needs --stealth, in a build with the stealth feature",
+                obscura_net::profile_file::PROFILE_FILE_ENV
+            );
+            std::process::exit(2);
+        }
         if explicit_tz.as_deref().is_some_and(|tz| tz != device.timezone) {
             eprintln!(
                 "OBSCURA_TIMEZONE differs from the profile's timezone {:?}; set one or the other",

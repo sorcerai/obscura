@@ -37,7 +37,8 @@ const __obscuraCore = globalThis.Deno.core;
     '__markParserScripts', '__obscura_hasPendingDynamicScripts',
     '__obscura_hasPendingLoadDelayingScripts', '__obscura_hasPendingParserBlockingScripts',
     '__obscura_nextPendingTimeoutDelay',
-    '__obscura_hw', '__obscura_mem',
+    '__obscura_hw', '__obscura_mem', '__obscura_fp_profile', '__obscura_language',
+    '__obscura_activateSummary',
     '__documentReadyState__', '__currentUrl',
     // internal helpers (var-declared throughout the file)
     '__processDynScriptQueue', '_decodeDataScriptUrl', '_markNative', '_fpRand', '_fpNoise',
@@ -8327,16 +8328,22 @@ globalThis.navigator = {
     get platform() { return globalThis.__obscura_ua_platform || "Windows"; },
     getHighEntropyValues(hints) {
       var brands = _uaBrands();
+      // A device profile carries the captured full version and architecture.
+      var prof = globalThis.__obscura_fp_profile;
+      var full = (prof && prof.fullVersion) || (_chromeMajor() + ".0.0.0");
       return Promise.resolve({
-        architecture: "x86",
+        architecture: (prof && prof.architecture) || "x86",
         bitness: "64",
         brands: brands,
-        fullVersionList: brands.map(function(b) { return {brand: b.brand, version: b.version + ".0.0.0"}; }),
+        fullVersionList: brands.map(function(b) {
+          var chrome = b.brand === 'Chromium' || b.brand === 'Google Chrome';
+          return {brand: b.brand, version: chrome ? full : b.version + ".0.0.0"};
+        }),
         mobile: false,
         model: "",
         platform: globalThis.__obscura_ua_platform || "Windows",
         platformVersion: globalThis.__obscura_ua_platform_version || "15.0.0",
-        uaFullVersion: _chromeMajor() + ".0.0.0",
+        uaFullVersion: full,
         wow64: false,
       });
     },
@@ -15761,7 +15768,8 @@ function _ensureInitialFrameRealm(element, srcdoc) {
     delete child.Deno;
     for (const name of ['__obscura_ua', '__obscura_platform', '__obscura_ua_platform',
                        '__obscura_ua_platform_version', '__obscura_stealth',
-                       '__obscura_geo_lat', '__obscura_geo_lon']) {
+                       '__obscura_geo_lat', '__obscura_geo_lon',
+                       '__obscura_fp_profile', '__obscura_language']) {
       if (globalThis[name] !== undefined) child[name] = globalThis[name];
     }
     child.__obscura_frameId = id;

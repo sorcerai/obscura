@@ -53,11 +53,22 @@ impl Os {
     }
 }
 
+/// `userAgentData` architecture: "arm" on Apple silicon and Windows on ARM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Arch {
+    X86,
+    Arm,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeviceProfile {
     pub os: Os,
     pub chrome: u32,
+    /// The full Chrome version client hints report, e.g. "146.0.7680.164".
+    pub full_version: String,
+    pub architecture: Arch,
     /// Client-hint `platformVersion`, e.g. "15.6.1" on macOS.
     pub platform_version: String,
     /// Screen width and height in CSS pixels.
@@ -100,7 +111,21 @@ impl DeviceProfile {
             "hardwareConcurrency": self.hardware_concurrency,
             "deviceMemory": self.device_memory,
             "seed": self.seed,
+            "fullVersion": self.full_version,
+            "architecture": match self.architecture {
+                Arch::X86 => "x86",
+                Arch::Arm => "arm",
+            },
         })
+    }
+
+    /// Chrome's Accept-Language for this locale: the same list
+    /// navigator.languages reports, the locale then its base language.
+    pub fn accept_language(&self) -> String {
+        match self.locale.split_once('-') {
+            Some((base, _)) => format!("{},{base};q=0.9", self.locale),
+            None => self.locale.clone(),
+        }
     }
 
     fn problems(&self) -> Vec<String> {
@@ -112,6 +137,23 @@ impl DeviceProfile {
                 SUPPORTED_CHROME.start(),
                 SUPPORTED_CHROME.end()
             ));
+        }
+        let full: Vec<&str> = self.full_version.split('.').collect();
+        let full_ok = full.len() == 4
+            && full[0] == self.chrome.to_string()
+            && full[1] == "0"
+            && full[2..]
+                .iter()
+                .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+        if !full_ok {
+            out.push(format!(
+                "full_version {:?} is not a Chrome {}.0.x.y version",
+                self.full_version, self.chrome
+            ));
+        }
+        // Linux's frozen UA and navigator.platform say x86_64.
+        if self.architecture == Arch::Arm && self.os == Os::Linux {
+            out.push("architecture \"arm\" contradicts Linux's x86_64 user agent".to_string());
         }
         let version: Vec<&str> = self.platform_version.split('.').collect();
         let numeric = version.len() == 3
@@ -148,23 +190,38 @@ impl DeviceProfile {
                 self.device_memory
             ));
         }
-        let tz_ok = self.timezone.contains('/')
-            && self
-                .timezone
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b));
+        let tz_ok = self.timezone == "UTC"
+            || (self.timezone.contains('/')
+                && self
+                    .timezone
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"/_+-".contains(&b)));
         if !tz_ok {
-            out.push(format!("timezone {:?} is not an IANA zone", self.timezone));
+            out.push(format!("timezone {:?} is not an IANA zone name", self.timezone));
         }
+        // language[-Script][-REGION]: en-US, es-419, sr-Latn, zh-Hant-TW.
         let mut parts = self.locale.split('-');
         let lang = parts.next().unwrap_or("");
-        let region = parts.next();
+        let subtags: Vec<&str> = parts.collect();
+        let script = |t: &str| {
+            t.len() == 4
+                && t.as_bytes()[0].is_ascii_uppercase()
+                && t.bytes().skip(1).all(|b| b.is_ascii_lowercase())
+        };
+        let region = |t: &str| {
+            (t.len() == 2 && t.bytes().all(|b| b.is_ascii_uppercase()))
+                || (t.len() == 3 && t.bytes().all(|b| b.is_ascii_digit()))
+        };
         let locale_ok = (2..=3).contains(&lang.len())
             && lang.bytes().all(|b| b.is_ascii_lowercase())
-            && region.is_none_or(|r| r.len() == 2 && r.bytes().all(|b| b.is_ascii_uppercase()))
-            && parts.next().is_none();
+            && match subtags[..] {
+                [] => true,
+                [a] => script(a) || region(a),
+                [a, b] => script(a) && region(b),
+                _ => false,
+            };
         if !locale_ok {
-            out.push(format!("locale {:?} is not like \"en-US\"", self.locale));
+            out.push(format!("locale {:?} is not a tag like \"en-US\"", self.locale));
         }
         out
     }
@@ -210,6 +267,31 @@ fn check_user_agent_against(profile: Option<&DeviceProfile>, ua: &str) -> Result
     }
 }
 
+/// Refuses a locale or Accept-Language other than the profile's: ICU, the
+/// Accept-Language header and navigator.languages all follow the profile.
+pub fn check_language(value: &str) -> Result<(), String> {
+    match active() {
+        Some(p) if value != p.locale && value != p.accept_language() => Err(format!(
+            "{PROFILE_FILE_ENV} fixes the language to {:?}; a different one would split the identity",
+            p.accept_language()
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Request headers the profile owns, which a page or CDP client cannot
+/// replace. Chrome likewise ignores a script's User-Agent and Sec-CH-UA.
+pub fn owns_header(name: &str) -> bool {
+    active().is_some()
+        && (name.eq_ignore_ascii_case("user-agent")
+            || name.get(..9).is_some_and(|p| p.eq_ignore_ascii_case("sec-ch-ua")))
+}
+
+/// The Accept-Language a request carries under a profile.
+pub fn accept_language() -> Option<String> {
+    active().map(DeviceProfile::accept_language)
+}
+
 /// The `Chrome/<major>` product and user agent the CDP version endpoints
 /// report, so a client that copies them sends the profile's own values.
 pub fn cdp_version() -> (String, String) {
@@ -228,7 +310,8 @@ mod tests {
 
     fn mac() -> Value {
         json!({
-            "os": "macos", "chrome": 146, "platform_version": "15.6.1",
+            "os": "macos", "chrome": 146, "full_version": "146.0.7680.164",
+            "architecture": "arm", "platform_version": "15.6.1",
             "screen": [1512, 982], "hardware_concurrency": 10, "device_memory": 8,
             "timezone": "America/Chicago", "locale": "en-US", "seed": 424242
         })
@@ -276,6 +359,7 @@ mod tests {
     fn unsupported_or_implausible_values_are_rejected_together() {
         let mut v = mac();
         v["chrome"] = json!(156);
+        v["full_version"] = json!("156.0.7800.1");
         v["device_memory"] = json!(16);
         v["timezone"] = json!("CST");
         v["locale"] = json!("english");
@@ -303,15 +387,48 @@ mod tests {
     }
 
     #[test]
+    fn locale_tags_utc_and_the_full_version_are_checked() {
+        for locale in ["es-419", "sr-Latn", "zh-Hant-TW", "de"] {
+            let mut v = mac();
+            v["locale"] = json!(locale);
+            assert!(parse(v).is_ok(), "{locale}");
+        }
+        let mut v = mac();
+        v["timezone"] = json!("UTC");
+        assert!(parse(v).is_ok());
+        for bad in ["146.0.0", "147.0.7680.164", "146.1.7680.164"] {
+            let mut v = mac();
+            v["full_version"] = json!(bad);
+            assert!(parse(v).is_err(), "{bad}");
+        }
+        let mut v = mac();
+        v["os"] = json!("linux");
+        v["platform_version"] = json!("6.8.0");
+        assert!(parse(v).is_err(), "arm Linux contradicts its x86_64 UA");
+    }
+
+    #[test]
+    fn accept_language_lists_the_locale_then_its_base() {
+        let mut v = mac();
+        v["locale"] = json!("de-DE");
+        assert_eq!(parse(v).unwrap().accept_language(), "de-DE,de;q=0.9");
+        let mut v = mac();
+        v["locale"] = json!("de");
+        assert_eq!(parse(v).unwrap().accept_language(), "de");
+    }
+
+    #[test]
     fn a_consistent_windows_and_linux_profile_pass() {
         let win = json!({
-            "os": "windows", "chrome": 145, "platform_version": "15.0.0",
+            "os": "windows", "chrome": 145, "full_version": "145.0.7632.110",
+            "architecture": "x86", "platform_version": "15.0.0",
             "screen": [1920, 1080], "hardware_concurrency": 12, "device_memory": 8,
             "timezone": "America/New_York", "locale": "en-US", "seed": 7
         });
         assert!(parse(win).is_ok());
         let linux = json!({
-            "os": "linux", "chrome": 144, "platform_version": "6.8.0",
+            "os": "linux", "chrome": 144, "full_version": "144.0.7559.96",
+            "architecture": "x86", "platform_version": "6.8.0",
             "screen": [2560, 1440], "hardware_concurrency": 16, "device_memory": 8,
             "timezone": "Europe/Berlin", "locale": "de-DE", "seed": 9
         });

@@ -58,6 +58,9 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
 }
 
 #[cfg(feature = "stealth")]
+use crate::profile_file::owns_header;
+
+#[cfg(feature = "stealth")]
 pub const STEALTH_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
@@ -124,6 +127,16 @@ fn emulation_target() -> (wreq_util::Profile, wreq_util::Platform) {
         Os::Linux => Platform::Linux,
     };
     (profile, platform)
+}
+
+/// The profile's Accept-Language, unless the request already carries one
+/// (a page may set it, as in Chrome). The emulation's default is en-US.
+#[cfg(feature = "stealth")]
+fn profile_accept_language<'a>(mut supplied: impl Iterator<Item = &'a String>) -> Option<String> {
+    if supplied.any(|k| k.eq_ignore_ascii_case("accept-language")) {
+        return None;
+    }
+    crate::profile_file::accept_language()
 }
 
 #[cfg(feature = "stealth")]
@@ -464,11 +477,16 @@ impl StealthHttpClient {
             let extra_headers = self.extra_headers.read().await;
             let supplied = request_headers.as_ref();
             let effective_headers = supplied.unwrap_or(&extra_headers);
-            if let Some(ua) = effective_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v)
+            // Under a profile the UA and client hints are the profile's, so a
+            // supplied one is dropped rather than sent beside the emulation's.
+            if let Some(ua) = effective_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent") && !owns_header(k)).map(|(_, v)| v)
                 .or(self.user_agent.as_ref()) {
                 req = req.header("user-agent", ua.as_str());
             }
-            for (k, v) in effective_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent")) {
+            if let Some(lang) = profile_accept_language(effective_headers.keys()) {
+                req = req.header("accept-language", lang);
+            }
+            for (k, v) in effective_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") && !owns_header(k)) {
                 if k.eq_ignore_ascii_case("origin") {
                     continue;
                 }
@@ -659,16 +677,20 @@ impl StealthHttpClient {
             }
         }
         let extra_headers = self.extra_headers.read().await;
-        if let Some(ua) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v)
-            .or_else(|| extra_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v))
+        let is_ua = |k: &str| k.eq_ignore_ascii_case("user-agent") && !owns_header(k);
+        if let Some(ua) = headers.iter().find(|(k, _)| is_ua(k.as_str())).map(|(_, v)| v)
+            .or_else(|| extra_headers.iter().find(|(k, _)| is_ua(k.as_str())).map(|(_, v)| v))
             .or(self.user_agent.as_ref()) {
             req = req.header("user-agent", ua.as_str());
         }
-        for (k, v) in extra_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent")) {
+        if let Some(lang) = profile_accept_language(headers.keys().chain(extra_headers.keys())) {
+            req = req.header("accept-language", lang);
+        }
+        for (k, v) in extra_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") && !owns_header(k)) {
             req = req.header(k.as_str(), v.as_str());
         }
         drop(extra_headers);
-        for (k, v) in headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent")) {
+        for (k, v) in headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") && !owns_header(k)) {
             req = req.header(k.as_str(), v.as_str());
         }
         if !body.is_empty() {

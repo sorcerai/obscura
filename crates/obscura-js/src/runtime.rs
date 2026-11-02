@@ -678,7 +678,8 @@ impl ObscuraJsRuntime {
             // locale the other surfaces claim (#734). This is process-global.
             // Set it under the first-creation lock, before parallel restorations.
             if !ISOLATE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
-                deno_core::v8::icu::set_default_locale("en-US");
+                let locale = obscura_net::profile_file::active().map_or("en-US", |p| p.locale.as_str());
+                deno_core::v8::icu::set_default_locale(locale);
             }
 
             let mut runtime = JsRuntime::new(RuntimeOptions {
@@ -1001,7 +1002,7 @@ impl ObscuraJsRuntime {
     ) {
         use deno_core::v8;
 
-        const IDENTITY_GLOBALS: [&str; 7] = [
+        const IDENTITY_GLOBALS: [&str; 9] = [
             "__obscura_ua",
             "__obscura_platform",
             "__obscura_ua_platform",
@@ -1009,6 +1010,8 @@ impl ObscuraJsRuntime {
             "__obscura_stealth",
             "__obscura_geo_lat",
             "__obscura_geo_lon",
+            "__obscura_fp_profile",
+            "__obscura_language",
         ];
 
         let main = self.runtime().main_context();

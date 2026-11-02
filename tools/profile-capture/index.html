@@ -29,7 +29,7 @@
   const problems = [];
   const uad = navigator.userAgentData;
   if (!uad) problems.push('navigator.userAgentData is missing: use Chrome, served from http://localhost or https.');
-  const hints = uad ? await uad.getHighEntropyValues(['platform', 'platformVersion', 'fullVersionList']) : {};
+  const hints = uad ? await uad.getHighEntropyValues(['platform', 'platformVersion', 'fullVersionList', 'architecture']) : {};
   const os = { macOS: 'macos', Windows: 'windows', Linux: 'linux' }[hints.platform];
   if (uad && !os) problems.push(`platform ${JSON.stringify(hints.platform)} is not Windows, macOS or Linux.`);
   const brand = (hints.fullVersionList || []).find(b => b.brand === 'Google Chrome' || b.brand === 'Chromium');
@@ -38,9 +38,14 @@
   if (brand && (chrome < SUPPORTED[0] || chrome > SUPPORTED[1])) {
     problems.push(`Chrome ${chrome}: obscura emulates ${SUPPORTED[0]}-${SUPPORTED[1]} on the wire, so this signature would not match its TLS. Capture from a Chrome in that range.`);
   }
+  const architecture = { x86: 'x86', arm: 'arm' }[hints.architecture];
+  if (uad && !architecture) problems.push(`architecture ${JSON.stringify(hints.architecture)} is not x86 or arm.`);
+  if (os === 'linux' && architecture === 'arm') problems.push('Linux on ARM: obscura reports Linux as x86_64, so this device would contradict itself.');
   const profile = {
     os: os || null,
     chrome: Number.isFinite(chrome) ? chrome : null,
+    full_version: brand ? brand.version : null,
+    architecture: architecture || null,
     platform_version: hints.platformVersion || null,
     screen: [screen.width, screen.height],
     hardware_concurrency: navigator.hardwareConcurrency,

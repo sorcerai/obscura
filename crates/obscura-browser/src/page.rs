@@ -2562,6 +2562,10 @@ impl Page {
         }
 
         let client = self.http_client.clone();
+        // Classic scripts went out on reqwest even under --stealth, so every
+        // script host saw a rustls handshake beside the page's Chrome one.
+        #[cfg(feature = "stealth")]
+        let stealth_client = self.stealth_client.clone();
         let page_callbacks = self.callbacks.clone();
         let script_initiator = self
             .url
@@ -2571,6 +2575,8 @@ impl Page {
             .iter()
             .map(|(idx, url)| {
                 let client = client.clone();
+                #[cfg(feature = "stealth")]
+                let stealth_client = stealth_client.clone();
                 let cbs = page_callbacks.clone();
                 let initiator = script_initiator.clone();
                 let url = url.clone();
@@ -2603,10 +2609,14 @@ impl Page {
                         return Some((idx, url, resp));
                     }
                     let request = ResourceRequest::subresource(ResourceType::Script, &initiator);
-                    match client
-                        .fetch_resource_with_callbacks(&parsed, request, Some(&cbs))
-                        .await
-                    {
+                    #[cfg(feature = "stealth")]
+                    let fetched = match stealth_client {
+                        Some(stealth) => stealth.fetch_resource_with_callbacks(&parsed, request, Some(&cbs)).await,
+                        None => client.fetch_resource_with_callbacks(&parsed, request, Some(&cbs)).await,
+                    };
+                    #[cfg(not(feature = "stealth"))]
+                    let fetched = client.fetch_resource_with_callbacks(&parsed, request, Some(&cbs)).await;
+                    match fetched {
                         Ok(resp) => Some((idx, url, resp)),
                         Err(e) => {
                             tracing::warn!("Failed to fetch script {}: {}", url, e);
@@ -3637,9 +3647,19 @@ impl Page {
                 redirected_from: Vec::new(),
             })
         } else if method == "POST" {
-            self.http_client
-                .post_form_with_callbacks(&url, body, Some(&self.callbacks))
-                .await
+            // A form POST on reqwest under --stealth was a second signature.
+            #[cfg(feature = "stealth")]
+            let posted = match &self.stealth_client {
+                Some(stealth) => {
+                    stealth
+                        .fetch_navigation_request(&url, "POST", Some(body.as_bytes().to_vec()), None, Some(&self.callbacks))
+                        .await
+                }
+                None => self.http_client.post_form_with_callbacks(&url, body, Some(&self.callbacks)).await,
+            };
+            #[cfg(not(feature = "stealth"))]
+            let posted = self.http_client.post_form_with_callbacks(&url, body, Some(&self.callbacks)).await;
+            posted
         } else {
             self.do_fetch(&url).await
         }

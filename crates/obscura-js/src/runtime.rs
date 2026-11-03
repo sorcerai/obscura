@@ -1396,6 +1396,11 @@ impl ObscuraJsRuntime {
         self.state.borrow_mut().content_type = content_type.to_string();
     }
 
+    /// Set the main document's `Refresh` response header (empty for none).
+    pub fn set_refresh(&self, refresh: &str) {
+        self.state.borrow_mut().refresh = refresh.to_string();
+    }
+
     pub fn set_title(&self, title: &str) {
         self.state.borrow_mut().title = title.to_string();
     }
@@ -10081,6 +10086,29 @@ mod tests {
                 [0, "0", 0, "0"], [0, "0", 0, "0"], [3, "3", 3, "3"], [0, "0", 0, "0"]],
             ["TypeError", "TypeError", "TypeError"]
         ]));
+    }
+
+    #[test]
+    fn declarative_refresh_values_parse_like_the_html_spec() {
+        let mut rt = setup_runtime("<html><head></head><body></body></html>");
+        let result = rt.evaluate(r#"
+            return ['5', '2; url=/pass', '2;URL=\'/q?a=1\'', '0,url=next', ' 3 ; Url = "x y" ',
+                    '1.5; url=/f', 'url=/x', '', 'abc', '4x', '2; /bare', '2; url=']
+                .map(v => __obscura_parseRefresh(v));
+        "#).unwrap();
+        assert_eq!(result, serde_json::json!([
+            {"delay": 5, "url": null},
+            {"delay": 2, "url": "/pass"},
+            {"delay": 2, "url": "/q?a=1"},
+            {"delay": 0, "url": "next"},
+            {"delay": 3, "url": "x y"},
+            {"delay": 1, "url": "/f"},
+            null, null, null, null,
+            {"delay": 2, "url": "/bare"},
+            {"delay": 2, "url": null},
+        ]));
+        let hidden = rt.evaluate("return Object.keys(globalThis).filter(k => /Refresh/.test(k));").unwrap();
+        assert_eq!(hidden, serde_json::json!([]));
     }
 
     #[test]

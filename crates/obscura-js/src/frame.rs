@@ -182,7 +182,8 @@ impl FrameRealm {
              try { const loadEvent = new Event('load', \
                  { bubbles: false, cancelable: false }); \
                  if (typeof window.onload === 'function') { try { window.onload.call(window, loadEvent); } catch (_) {} } \
-                 try { window.dispatchEvent(loadEvent); } catch (_) {} } catch (_) {}",
+                 try { window.dispatchEvent(loadEvent); } catch (_) {} } catch (_) {}\
+             try { __obscura_declarativeRefresh(false); } catch (_) {}",
         );
         if result.is_ok() {
             state.borrow_mut().navigation_timing.record("loadEventEnd");

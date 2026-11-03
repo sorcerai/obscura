@@ -1149,11 +1149,29 @@ async fn stop_worker(child: &mut tokio::process::Child) {
 }
 
 async fn settle_page(page: &mut Page, wait_secs: u64, fixed: bool) {
-    let wait_ms = wait_secs.saturating_mul(1000);
-    if fixed {
-        page.settle_for_duration(wait_ms).await;
-    } else {
-        page.settle(wait_ms).await;
+    // A timer can navigate after load: a declarative refresh or a scripted
+    // redirect. Follow those within the --wait budget and the chain limit, as
+    // a browser left open that long would. A fixed wait is pumped in slices so
+    // a queued navigation is followed when it appears, not when the wait ends.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(wait_secs);
+    for _ in 0..page.navigation_chain_limit() {
+        loop {
+            let remaining = deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_millis() as u64;
+            if remaining == 0 || page.has_pending_navigation() {
+                break;
+            }
+            if fixed {
+                page.settle_for_duration(remaining.min(250)).await;
+            } else {
+                page.settle(remaining).await;
+                break;
+            }
+        }
+        if !page.has_pending_navigation() || page.process_pending_navigation().await.is_err() {
+            return;
+        }
     }
 }
 

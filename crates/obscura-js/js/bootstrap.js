@@ -37,7 +37,7 @@ const __obscuraCore = globalThis.Deno.core;
     '__markParserScripts', '__obscura_hasPendingDynamicScripts',
     '__obscura_hasPendingLoadDelayingScripts', '__obscura_hasPendingParserBlockingScripts',
     '__obscura_nextPendingTimeoutDelay',
-    '__obscura_hw', '__obscura_mem',
+    '__obscura_hw', '__obscura_mem', '__obscura_parseRefresh', '__obscura_declarativeRefresh',
     '__documentReadyState__', '__currentUrl',
     // internal helpers (var-declared throughout the file)
     '__processDynScriptQueue', '_decodeDataScriptUrl', '_markNative', '_fpRand', '_fpNoise',
@@ -8007,6 +8007,54 @@ function __stripFragment(url) {
   var i = url.indexOf('#');
   return i < 0 ? url : url.slice(0, i);
 }
+// HTML "shared declarative refresh steps": parse a Refresh header or a
+// <meta http-equiv=refresh> content value into {delay, url}, or null when it
+// does not parse. `url` is null for a plain reload.
+var _parseRefresh = function(value) {
+  var s = String(value).replace(/^[\t\n\f\r ]+/, '');
+  var m = /^(\d*)(\.[\d.]*)?/.exec(s);
+  if (m[1] === '' && m[2] === undefined) return null;
+  var delay = m[1] === '' ? 0 : parseInt(m[1], 10);
+  var rest = s.slice(m[0].length);
+  if (rest !== '' && !/^[;,\t\n\f\r ]/.test(rest)) return null;
+  rest = rest.replace(/^[\t\n\f\r ]*[;,]?[\t\n\f\r ]*/, '');
+  if (rest === '') return { delay: delay, url: null };
+  var u = /^url[\t\n\f\r ]*=[\t\n\f\r ]*/i.exec(rest);
+  if (u) rest = rest.slice(u[0].length);
+  if (rest[0] === '"' || rest[0] === "'") {
+    var end = rest.indexOf(rest[0], 1);
+    rest = end < 0 ? rest.slice(1) : rest.slice(1, end);
+  }
+  rest = rest.replace(/[\t\n\f\r ]+$/, '');
+  return { delay: delay, url: rest === '' ? null : rest };
+};
+// After load, honour the document's Refresh header (main document only) or its
+// first <meta http-equiv=refresh>: navigate after the delay, as Chrome does.
+// Uses the bootstrap's own timer and navigation, not page-visible setTimeout or
+// location, so page scripts that wrap those neither see nor block it. Each
+// refresh is an ordinary page-initiated navigation and counts against the
+// navigation chain limit.
+var _declarativeRefresh = function(mainDocument) {
+  var value = mainDocument ? _domParse('document_refresh') : '';
+  if (typeof value !== 'string' || value === '') {
+    value = '';
+    var metas = document.getElementsByTagName('meta');
+    for (var i = 0; i < metas.length; i++) {
+      if (String(metas[i].getAttribute('http-equiv') || '').toLowerCase() === 'refresh') {
+        value = metas[i].getAttribute('content') || '';
+        break;
+      }
+    }
+  }
+  var parsed = value === '' ? null : _parseRefresh(value);
+  if (!parsed) return;
+  var target = parsed.url === null ? __currentUrl() : parsed.url;
+  _scheduleAfter(parsed.delay * 1000, function() { __locationNavigate(target, true); });
+};
+// Bootstrap code is private to this closure. The host's post-load scripts
+// call in through these hidden globals.
+globalThis.__obscura_parseRefresh = _parseRefresh;
+globalThis.__obscura_declarativeRefresh = _declarativeRefresh;
 function __locationNavigate(url, replace) {
   var r = _resolveUrl(url);
   var target = r;

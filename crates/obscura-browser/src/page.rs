@@ -304,6 +304,8 @@ pub struct Page {
     /// without parameters, or empty when no type was supplied.
     /// Exposed to JS as `document.contentType`.
     pub content_type: String,
+    /// The main document's `Refresh` response header, empty when it had none.
+    pub refresh: String,
     /// Monotonic origin for the current document's CSS animation timeline.
     /// It is reset once author styles are installed, so stylesheet download
     /// latency does not incorrectly advance newly-created animations.
@@ -1143,6 +1145,7 @@ impl Page {
             default_background_color_override: None,
             encoding: "UTF-8".to_string(),
             content_type: String::new(),
+            refresh: String::new(),
             document_timeline_origin: std::time::Instant::now(),
             navigation_timing: NavigationTiming::default(),
             navigation_timeout: None,
@@ -1927,6 +1930,7 @@ impl Page {
         rt.set_url(&self.url_string());
         rt.set_encoding(&self.encoding);
         rt.set_content_type(&self.content_type);
+        rt.set_refresh(&self.refresh);
         rt.set_title(&self.title);
         rt.set_referrer(&self.referrer);
         let (session_history, session_index) = self.predicted_session_history();
@@ -3110,7 +3114,8 @@ impl Page {
                  try {\n\
                    const loadEvent = new Event('load', {bubbles:false,cancelable:false});\n\
                    try { window.dispatchEvent(loadEvent); } catch(e) {}\n\
-                 } catch(e) {}",
+                 } catch(e) {}\n\
+                 try { __obscura_declarativeRefresh(true); } catch(e) {}",
             );
             if completed.is_ok() {
                 js.record_navigation_timing("loadEventEnd");
@@ -3671,6 +3676,7 @@ impl Page {
             None => (parse_html(&body_text), base_content_type(response.content_type()).unwrap_or_default()),
         };
         self.content_type = document_content_type;
+        self.refresh = response.headers.get("refresh").cloned().unwrap_or_default();
 
         self.title = dom
             .query_selector("title")

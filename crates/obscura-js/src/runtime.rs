@@ -1399,6 +1399,11 @@ impl ObscuraJsRuntime {
         self.state.borrow_mut().content_type = content_type.to_string();
     }
 
+    /// Set the main document's `Refresh` response header (empty for none).
+    pub fn set_refresh(&self, refresh: &str) {
+        self.state.borrow_mut().refresh = refresh.to_string();
+    }
+
     pub fn set_title(&self, title: &str) {
         self.state.borrow_mut().title = title.to_string();
     }
@@ -4524,16 +4529,25 @@ impl ObscuraJsRuntime {
                 value: Some(value.clone()),
                 unserializable_value: None,
             },
-            serde_json::Value::Number(n) => RemoteObjectInfo {
-                thrown: false,
-                js_type: "number".into(),
-                subtype: None,
-                class_name: String::new(),
-                description: n.to_string(),
-                object_id: None,
-                value: Some(value.clone()),
-                unserializable_value: None,
-            },
+            serde_json::Value::Number(n) => {
+                // Chrome writes a whole number without a fraction (`94`); the
+                // f64 here would go out as `94.0`, which a client reading an
+                // integer rejects (chromey's content stream does).
+                let value = n
+                    .as_f64()
+                    .filter(|f| n.is_f64() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0)
+                    .map_or_else(|| value.clone(), |f| serde_json::json!(f as i64));
+                RemoteObjectInfo {
+                    thrown: false,
+                    js_type: "number".into(),
+                    subtype: None,
+                    class_name: String::new(),
+                    description: value.to_string(),
+                    object_id: None,
+                    value: Some(value),
+                    unserializable_value: None,
+                }
+            }
             serde_json::Value::String(s) => RemoteObjectInfo {
                 thrown: false,
                 js_type: "string".into(),
@@ -7722,6 +7736,23 @@ mod tests {
     }
 
     #[test]
+    fn dom_parser_ignores_page_startswith_polyfill() {
+        // iasWorld county sites replace startsWith with a polyfill that ignores
+        // the position argument; their SOAP responses start with `<?xml`.
+        let mut rt = setup_runtime("<html><body></body></html>");
+        let result = rt
+            .evaluate(r#"(function(){
+                String.prototype.startsWith = function(a){ return this.substr(0, a.length) === a; };
+                var xml = '<?xml version="1.0" encoding="utf-8"?><soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><R xmlns="http://tempuri.org/"><GetSearchExistsResult>true</GetSearchExistsResult></R></soap:Body></soap:Envelope>';
+                var d = new DOMParser().parseFromString(xml, 'text/xml');
+                if (d.querySelector('parsererror')) return 'ERR';
+                return d.getElementsByTagName('GetSearchExistsResult')[0].textContent;
+            })()"#)
+            .unwrap();
+        assert_eq!(result, serde_json::json!("true"));
+    }
+
+    #[test]
     fn dom_parser_accepts_well_formed_xml() {
         let mut rt = setup_runtime("<html><body></body></html>");
         let ok = rt
@@ -10116,6 +10147,29 @@ mod tests {
                 [0, "0", 0, "0"], [0, "0", 0, "0"], [3, "3", 3, "3"], [0, "0", 0, "0"]],
             ["TypeError", "TypeError", "TypeError"]
         ]));
+    }
+
+    #[test]
+    fn declarative_refresh_values_parse_like_the_html_spec() {
+        let mut rt = setup_runtime("<html><head></head><body></body></html>");
+        let result = rt.evaluate(r#"
+            return ['5', '2; url=/pass', '2;URL=\'/q?a=1\'', '0,url=next', ' 3 ; Url = "x y" ',
+                    '1.5; url=/f', 'url=/x', '', 'abc', '4x', '2; /bare', '2; url=']
+                .map(v => __obscura_parseRefresh(v));
+        "#).unwrap();
+        assert_eq!(result, serde_json::json!([
+            {"delay": 5, "url": null},
+            {"delay": 2, "url": "/pass"},
+            {"delay": 2, "url": "/q?a=1"},
+            {"delay": 0, "url": "next"},
+            {"delay": 3, "url": "x y"},
+            {"delay": 1, "url": "/f"},
+            null, null, null, null,
+            {"delay": 2, "url": "/bare"},
+            {"delay": 2, "url": null},
+        ]));
+        let hidden = rt.evaluate("return Object.keys(globalThis).filter(k => /Refresh/.test(k));").unwrap();
+        assert_eq!(hidden, serde_json::json!([]));
     }
 
     #[test]
@@ -19739,7 +19793,7 @@ mod tests {
         for await_promise in [false, true] {
             let result = rt.evaluate_for_cdp("6 * 7", true, await_promise).await.unwrap();
             assert!(!result.thrown);
-            assert_eq!(result.value, Some(serde_json::json!(42.0)));
+            assert_eq!(result.value, Some(serde_json::json!(42)));
         }
     }
 
@@ -19749,10 +19803,10 @@ mod tests {
         for (name, await_promise) in [("syncLexical", false), ("asyncLexical", true)] {
             let declaration = format!("let {name} = 40; {name}");
             let first = rt.evaluate_for_cdp(&declaration, true, await_promise).await.unwrap();
-            assert_eq!(first.value, Some(serde_json::json!(40.0)));
+            assert_eq!(first.value, Some(serde_json::json!(40)));
             let second = rt.evaluate_for_cdp(&format!("{name} += 2; {name}"), true, await_promise).await.unwrap();
             assert!(!second.thrown);
-            assert_eq!(second.value, Some(serde_json::json!(42.0)));
+            assert_eq!(second.value, Some(serde_json::json!(42)));
         }
     }
 
@@ -19789,7 +19843,7 @@ mod tests {
         let kept = rt.call_function_on_for_cdp(
             "function() { return this.kept; }", Some(&oid), &[], true, false,
         ).await.unwrap();
-        assert_eq!(kept.value, Some(serde_json::json!(42.0)));
+        assert_eq!(kept.value, Some(serde_json::json!(42)));
         rt.release_object(&oid);
         assert_eq!(
             rt.evaluate("Object.keys(globalThis.__obscura_objects).length").unwrap(),
@@ -20260,7 +20314,7 @@ mod tests {
         rt.execute_script("ready-timer", "globalThis.timerRan = false; setTimeout(() => timerRan = true, 0);").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let result = rt.evaluate_for_cdp("Promise.resolve(42)", true, true).await.unwrap();
-        assert_eq!(result.value.unwrap(), serde_json::json!(42.0));
+        assert_eq!(result.value.unwrap(), serde_json::json!(42));
         assert_eq!(rt.evaluate("timerRan").unwrap(), serde_json::json!(false),
             "an already-resolved CDP promise must not drain unrelated tasks");
         rt.run_autonomous_event_loop_turn().await.unwrap();

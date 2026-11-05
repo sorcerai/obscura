@@ -830,6 +830,51 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn a_whole_number_comes_back_as_an_integer() {
+        let mut ctx = CdpContext::new();
+        let page_id = ctx.create_page();
+        let session_id = Some("whole-number".to_string());
+        ctx.sessions.insert("whole-number".to_string(), page_id);
+
+        // chromey's content stream: wrap a string, then read its length off
+        // the wrapper and expect an unsigned integer.
+        let wrapper = handle(
+            "evaluate",
+            &json!({"expression": "({h: 'abc'})", "returnByValue": false}),
+            &mut ctx,
+            &session_id,
+        )
+        .await
+        .expect("evaluate");
+        let object_id = wrapper["result"]["objectId"].clone();
+        assert!(object_id.is_string(), "{wrapper}");
+        let length = handle(
+            "callFunctionOn",
+            &json!({
+                "functionDeclaration": "function(){return this.h.length}",
+                "objectId": object_id,
+                "returnByValue": true,
+            }),
+            &mut ctx,
+            &session_id,
+        )
+        .await
+        .expect("callFunctionOn");
+        assert_eq!(length["result"]["value"].as_u64(), Some(3), "{length}");
+        assert_eq!(length["result"]["value"].to_string(), "3");
+
+        let fraction = handle(
+            "evaluate",
+            &json!({"expression": "1.5", "returnByValue": true}),
+            &mut ctx,
+            &session_id,
+        )
+        .await
+        .expect("evaluate");
+        assert_eq!(fraction["result"]["value"], json!(1.5));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn evaluate_reports_a_rejection_through_exception_details() {
         let mut ctx = CdpContext::new();
         let page_id = ctx.create_page();
@@ -919,7 +964,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(reply["result"]["value"], json!(2.0));
+        assert_eq!(reply["result"]["value"], json!(2));
         assert!(reply.get("exceptionDetails").is_none());
     }
     #[tokio::test(flavor = "current_thread")]

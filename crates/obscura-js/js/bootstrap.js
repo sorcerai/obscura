@@ -37,8 +37,8 @@ const __obscuraCore = globalThis.Deno.core;
     '__markParserScripts', '__obscura_hasPendingDynamicScripts',
     '__obscura_hasPendingLoadDelayingScripts', '__obscura_hasPendingParserBlockingScripts',
     '__obscura_nextPendingTimeoutDelay',
-    '__obscura_hw', '__obscura_mem', '__obscura_fp_profile', '__obscura_language',
-    '__obscura_activateSummary',
+    '__obscura_hw', '__obscura_mem', '__obscura_parseRefresh', '__obscura_declarativeRefresh',
+    '__obscura_fp_profile', '__obscura_language', '__obscura_activateSummary',
     '__documentReadyState__', '__currentUrl',
     // internal helpers (var-declared throughout the file)
     '__processDynScriptQueue', '_decodeDataScriptUrl', '_markNative', '_fpRand', '_fpNoise',
@@ -3504,6 +3504,13 @@ function _setElemHrefPart(el, part, value) {
   if (c) el.setAttribute('href', c.href);
 }
 
+// Unknown input types use the text state and support selection.
+const _INPUT_NO_SELECTION_TYPES = new Set([
+  'hidden', 'email', 'date', 'month', 'week', 'time', 'datetime-local',
+  'number', 'range', 'color', 'checkbox', 'radio', 'file',
+  'submit', 'image', 'reset', 'button',
+]);
+
 // --- <input> number/date conversion (valueAsNumber/valueAsDate/stepUp/Down) ---
 // Applicable types and their step scale factor + default step (HTML spec).
 const _INPUT_NUM_TYPES = { date: 1, month: 1, week: 1, time: 1, 'datetime-local': 1, number: 1, range: 1 };
@@ -5043,10 +5050,32 @@ class Element extends Node {
       return;
     }
     const value = String(v);
+    const type = tag === 'input' ? (this.getAttribute('type') || 'text').toLowerCase() : '';
+    const supportsSelection = tag === 'textarea' ||
+      (tag === 'input' && !_INPUT_NO_SELECTION_TYPES.has(type));
+    let changed = false;
+    if (supportsSelection) {
+      if (_formValues[this._nid] === undefined) _loadFormState(this._nid);
+      let previous = _formValues[this._nid];
+      if (previous === undefined) {
+        previous = (tag === 'textarea'
+          ? _domParse('text_content', this._nid)
+          : _domParse('get_attribute', this._nid, 'value')) ?? '';
+      }
+      changed = previous !== value;
+    }
     _formValues[this._nid] = value;
     _dom("set_form_value", this._nid, value);
     if (tag === 'textarea') {
       this.textContent = value;
+    }
+    // Assigning the same value preserves selection. Internal updates must not
+    // invoke a page override of setSelectionRange().
+    if (changed || (supportsSelection && !_ns_selectionStart.has(this))) {
+      const position = changed ? value.length : 0;
+      _ns_selectionStart.set(this, position);
+      _ns_selectionEnd.set(this, position);
+      _ns_selectionDir.set(this, 'none');
     }
   }
   get min() { return this.getAttribute('min') || ''; }
@@ -7981,6 +8010,54 @@ function __stripFragment(url) {
   var i = url.indexOf('#');
   return i < 0 ? url : url.slice(0, i);
 }
+// HTML "shared declarative refresh steps": parse a Refresh header or a
+// <meta http-equiv=refresh> content value into {delay, url}, or null when it
+// does not parse. `url` is null for a plain reload.
+var _parseRefresh = function(value) {
+  var s = String(value).replace(/^[\t\n\f\r ]+/, '');
+  var m = /^(\d*)(\.[\d.]*)?/.exec(s);
+  if (m[1] === '' && m[2] === undefined) return null;
+  var delay = m[1] === '' ? 0 : parseInt(m[1], 10);
+  var rest = s.slice(m[0].length);
+  if (rest !== '' && !/^[;,\t\n\f\r ]/.test(rest)) return null;
+  rest = rest.replace(/^[\t\n\f\r ]*[;,]?[\t\n\f\r ]*/, '');
+  if (rest === '') return { delay: delay, url: null };
+  var u = /^url[\t\n\f\r ]*=[\t\n\f\r ]*/i.exec(rest);
+  if (u) rest = rest.slice(u[0].length);
+  if (rest[0] === '"' || rest[0] === "'") {
+    var end = rest.indexOf(rest[0], 1);
+    rest = end < 0 ? rest.slice(1) : rest.slice(1, end);
+  }
+  rest = rest.replace(/[\t\n\f\r ]+$/, '');
+  return { delay: delay, url: rest === '' ? null : rest };
+};
+// After load, honour the document's Refresh header (main document only) or its
+// first <meta http-equiv=refresh>: navigate after the delay, as Chrome does.
+// Uses the bootstrap's own timer and navigation, not page-visible setTimeout or
+// location, so page scripts that wrap those neither see nor block it. Each
+// refresh is an ordinary page-initiated navigation and counts against the
+// navigation chain limit.
+var _declarativeRefresh = function(mainDocument) {
+  var value = mainDocument ? _domParse('document_refresh') : '';
+  if (typeof value !== 'string' || value === '') {
+    value = '';
+    var metas = document.getElementsByTagName('meta');
+    for (var i = 0; i < metas.length; i++) {
+      if (String(metas[i].getAttribute('http-equiv') || '').toLowerCase() === 'refresh') {
+        value = metas[i].getAttribute('content') || '';
+        break;
+      }
+    }
+  }
+  var parsed = value === '' ? null : _parseRefresh(value);
+  if (!parsed) return;
+  var target = parsed.url === null ? __currentUrl() : parsed.url;
+  _scheduleAfter(parsed.delay * 1000, function() { __locationNavigate(target, true); });
+};
+// Bootstrap code is private to this closure. The host's post-load scripts
+// call in through these hidden globals.
+globalThis.__obscura_parseRefresh = _parseRefresh;
+globalThis.__obscura_declarativeRefresh = _declarativeRefresh;
 function __locationNavigate(url, replace) {
   var r = _resolveUrl(url);
   var target = r;
@@ -12652,6 +12729,12 @@ const _checkXmlWellFormed = (html) => {
 // "well-formed" whenever the scan is ambiguous, so valid XML is never falsely
 // flagged. Quoted attribute regions, comments, CDATA, PIs and the doctype are
 // skipped; a literal '<' in text (invalid in XML) reads as a bad tag.
+// Pages replace String.prototype.startsWith with polyfills that ignore the
+// position argument (`this.substr(0, a.length) === a`; iasWorld county sites
+// ship one). Every `startsWith(x, i)` below then tested the start of the
+// input, so any XML beginning with `<?xml` read as a parse error.
+const _startsWithAt = Function.prototype.call.bind(String.prototype.startsWith);
+
 function _xmlWellFormed(src) {
   const s = String(src);
   const stack = [];
@@ -12662,10 +12745,10 @@ function _xmlWellFormed(src) {
     const lt = s.indexOf('<', i);
     if (lt === -1) break;
     i = lt;
-    if (s.startsWith('<!--', i)) { const e = s.indexOf('-->', i + 4); if (e === -1) return false; i = e + 3; continue; }
-    if (s.startsWith('<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e === -1) return false; i = e + 3; continue; }
-    if (s.startsWith('<?', i)) { const e = s.indexOf('?>', i + 2); if (e === -1) return false; i = e + 2; continue; }
-    if (s.startsWith('<!', i)) { const e = s.indexOf('>', i + 2); if (e === -1) return false; i = e + 1; continue; }
+    if (_startsWithAt(s, '<!--', i)) { const e = s.indexOf('-->', i + 4); if (e === -1) return false; i = e + 3; continue; }
+    if (_startsWithAt(s, '<![CDATA[', i)) { const e = s.indexOf(']]>', i + 9); if (e === -1) return false; i = e + 3; continue; }
+    if (_startsWithAt(s, '<?', i)) { const e = s.indexOf('?>', i + 2); if (e === -1) return false; i = e + 2; continue; }
+    if (_startsWithAt(s, '<!', i)) { const e = s.indexOf('>', i + 2); if (e === -1) return false; i = e + 1; continue; }
     // A start/end/self-closing tag: find its '>' while skipping quoted regions.
     let j = i + 1, quote = null;
     while (j < n) {
@@ -19356,32 +19439,51 @@ if (!Element.prototype.setSelectionRange) {
   _markNative(Element.prototype.setSelectionRange);
 }
 
-// Element.prototype.setRangeText - replace selection with text
+// Element.prototype.setRangeText - replace selected text, preserving the
+// selection around edits as HTMLInputElement/HTMLTextAreaElement do.
 if (!Element.prototype.setRangeText) {
   Element.prototype.setRangeText = function setRangeText(replacement, start, end, selectMode) {
-    const val = this.value;
-    if (!val) return;
-    const strVal = String(val);
-    start = start === undefined ? (this.selectionStart ?? 0) : Math.max(0, parseInt(start, 10) || 0);
-    end = end === undefined ? (this.selectionEnd ?? 0) : Math.max(0, parseInt(end, 10) || 0);
-    const newValue = strVal.slice(0, start) + String(replacement) + strVal.slice(end);
-    this.value = newValue;
-    selectMode = selectMode || 'preserve';
-    if (selectMode === 'select') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'start') {
-      _ns_selectionStart.set(this, start);
-      _ns_selectionEnd.set(this, start);
-      _ns_selectionDir.set(this, 'none');
-    } else if (selectMode === 'end') {
-      const replLen = String(replacement).length;
-      _ns_selectionStart.set(this, start + replLen);
-      _ns_selectionEnd.set(this, start + replLen);
-      _ns_selectionDir.set(this, 'none');
+    const tag = this.localName;
+    const inputType = tag === 'input' ? (this.getAttribute('type') || 'text').toLowerCase() : '';
+    if (tag !== 'textarea' && !(tag === 'input' &&
+        !_INPUT_NO_SELECTION_TYPES.has(inputType))) {
+      throw new DOMException('This input element does not support text selection.', 'InvalidStateError');
     }
+    if (arguments.length < 1 || arguments.length === 2)
+      throw new TypeError("Failed to execute 'setRangeText': invalid number of arguments");
+    const mode = selectMode === undefined ? 'preserve' : String(selectMode);
+    if (!['select', 'start', 'end', 'preserve'].includes(mode))
+      throw new TypeError("Failed to execute 'setRangeText': invalid selection mode");
+    const value = String(this.value ?? '');
+    const text = String(replacement);
+    let lo = arguments.length < 3 ? (this.selectionStart ?? 0) : (+start >>> 0);
+    let hi = arguments.length < 3 ? (this.selectionEnd ?? 0) : (+end >>> 0);
+    if (lo > hi) throw new DOMException('Start is greater than end.', 'IndexSizeError');
+    lo = Math.min(lo, value.length);
+    hi = Math.min(hi, value.length);
+    const beforeStart = Math.min(this.selectionStart ?? 0, value.length);
+    const beforeEnd = Math.min(this.selectionEnd ?? 0, value.length);
+    this.value = value.slice(0, lo) + text + value.slice(hi);
+    const afterEnd = lo + text.length;
+    const delta = text.length - (hi - lo);
+    let selectionStart = beforeStart;
+    let selectionEnd = beforeEnd;
+    if (mode === 'select') {
+      selectionStart = lo;
+      selectionEnd = afterEnd;
+    } else if (mode === 'start') {
+      selectionStart = selectionEnd = lo;
+    } else if (mode === 'end') {
+      selectionStart = selectionEnd = afterEnd;
+    } else {
+      // Preserve offsets before the replaced range, shift offsets after it,
+      // and collapse selection endpoints that intersect the replaced text.
+      if (selectionStart > hi) selectionStart += delta;
+      else if (selectionStart > lo) selectionStart = lo;
+      if (selectionEnd > hi) selectionEnd += delta;
+      else if (selectionEnd > lo) selectionEnd = afterEnd;
+    }
+    this.setSelectionRange(selectionStart, selectionEnd, 'forward');
   };
   _markNative(Element.prototype.setRangeText);
 }

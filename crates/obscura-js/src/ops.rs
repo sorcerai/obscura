@@ -343,6 +343,9 @@ pub struct ObscuraState {
     /// parameters. Backs `document.contentType`; a `text/plain` navigation
     /// must not report `text/html` just because the URL has no extension.
     pub content_type: String,
+    /// The main document's `Refresh` response header, empty when it had none.
+    /// Read once after load to schedule a declarative refresh.
+    pub refresh: String,
     pub title: String,
     /// (reduced motion, dark scheme), shared by every document in this page.
     pub(crate) media_preferences: Rc<Cell<(bool, bool)>>,
@@ -640,6 +643,7 @@ impl ObscuraState {
             storage_origin_cache: RefCell::new(StorageOriginCache { origin: "null".into(), ..Default::default() }),
             encoding: "UTF-8".to_string(),
             content_type: String::new(),
+            refresh: String::new(),
             title: String::new(),
             media_preferences: Rc::new(Cell::new((false, false))),
             referrer: String::new(),
@@ -2468,6 +2472,7 @@ fn op_dom_inner(shared: SharedState, cmd: String, arg1: String, arg2: String) ->
         "document_content_type" => {
             serde_json::to_string(&gs.content_type).unwrap_or("\"text/html\"".into())
         }
+        "document_refresh" => serde_json::to_string(&gs.refresh).unwrap_or("\"\"".into()),
         "document_element" => {
             for cid in dom.children(dom.document()) {
                 if let Some(n) = dom.get_node(cid) {

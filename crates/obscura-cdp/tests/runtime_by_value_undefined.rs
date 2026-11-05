@@ -11,7 +11,7 @@ async fn check_by_value(method: &str, await_promise: bool) {
     for (expression, expected_type, expected_value) in [
         ("undefined", "undefined", None),
         ("null", "object", Some(Value::Null)),
-        ("0", "number", Some(json!(0.0))),
+        ("0", "number", Some(json!(0))),
         ("false", "boolean", Some(json!(false))),
         ("''", "string", Some(json!(""))),
         ("({answer: 42})", "object", Some(json!({"answer": 42}))),

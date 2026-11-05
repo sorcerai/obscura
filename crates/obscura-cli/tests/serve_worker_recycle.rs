@@ -188,7 +188,7 @@ async fn rss_limit_replaces_a_bloated_worker_and_keeps_its_session() {
         std::thread::sleep(Duration::from_millis(100));
     };
     // Draining: the replacement exists, the bloated worker still answers.
-    assert_eq!(held.eval("window.keep[1000]").await, json!(7.0));
+    assert_eq!(held.eval("window.keep[1000]").await, json!(7));
     // New sessions work and never land on the draining worker's limit.
     for _ in 0..4 {
         let mut s = Session::open(server.1, PAGE).await;

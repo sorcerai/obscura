@@ -8418,7 +8418,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.value, Some(serde_json::json!(42.0)));
+        assert_eq!(result.value, Some(serde_json::json!(42)));
     }
 
     #[test]
@@ -8505,7 +8505,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(result.value, Some(serde_json::json!(2.0)));
+        assert_eq!(result.value, Some(serde_json::json!(2)));
     }
 
     fn import_map_test_page(name: &str, base: &str, html: &str) -> super::Page {

@@ -101,7 +101,7 @@ async fn object_id_argument_passes_the_real_object() {
     let reply = response.result.unwrap();
     assert!(reply.get("exceptionDetails").is_none(), "{reply}");
     assert_eq!(reply["result"]["type"], "number", "{reply}");
-    assert_eq!(reply["result"]["value"], json!(42.0), "{reply}");
+    assert_eq!(reply["result"]["value"], json!(42), "{reply}");
 }
 
 // Without an objectId a null `value` is a genuine null argument and must stay one.

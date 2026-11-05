@@ -13,7 +13,7 @@ async fn primitive_results_keep_their_types_without_retaining_handles() {
             for return_by_value in [false, true] {
                 for (source, kind, value, unserializable) in [
                     ("false", "boolean", Some(json!(false)), None),
-                    ("42", "number", Some(json!(42.0)), None),
+                    ("42", "number", Some(json!(42)), None),
                     ("'<header>Header</header>'", "string", Some(json!("<header>Header</header>")), None),
                     ("null", "object", Some(Value::Null), None),
                     ("undefined", "undefined", None, None),

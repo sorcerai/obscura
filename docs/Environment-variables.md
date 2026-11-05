@@ -173,6 +173,49 @@ Pin a specific browser profile from the built-in pool by index (`0`-based). Each
 OBSCURA_PROFILE=2 obscura serve
 ```
 
+### `OBSCURA_PROFILE_FILE`
+
+Path to a JSON file describing one device. It replaces the fixed Windows Chrome 145 identity of `--stealth`. A profile needs `--stealth` in a build with the `stealth` feature, because only that transport emulates Chrome's TLS; without it the process exits.
+
+The file names the operating system and the Chrome major. The UA string, `navigator.platform`, `userAgentData`, `Sec-CH-UA`, `Sec-CH-UA-Platform` and the TLS/HTTP2 emulation are derived from those two. The other fields are checked when the process starts, and any problem stops it before it serves a request.
+
+The checks:
+- `chrome` must be one the transport can emulate (143-148).
+- `full_version` must be a `<chrome>.0.x.y` version.
+- `architecture` is `x86` or `arm`, and `arm` is refused with `linux`, whose user agent says x86_64.
+- `platform_version` must fit the OS.
+- `device_memory` must be a value Chrome reports.
+- `timezone` must be `UTC` or look like an IANA zone name. Whether the zone exists is not checked.
+- `locale` must be a tag such as `en-US`, `es-419` or `sr-Latn`.
+
+What then stays fixed:
+- The screen, `hardwareConcurrency`, `deviceMemory` and the noise seed stay the same on every page and in its iframes, instead of being re-drawn per document.
+- `timezone` sets `TZ`.
+- `locale` sets `navigator.languages`, the `Intl` default locale and the `Accept-Language` header.
+- `full_version` and `architecture` appear in `getHighEntropyValues`.
+
+Anything that would split the identity is refused:
+- An `OBSCURA_TIMEZONE` or a `--user-agent` that disagrees stops the process.
+- A different `Network.setUserAgentOverride`, `Emulation.setUserAgentOverride`, `Emulation.setLocaleOverride` or `acceptLanguage` returns a CDP error.
+- A `User-Agent` or `Sec-CH-UA*` header from `Network.setExtraHTTPHeaders` or request interception is dropped.
+
+`/json/version` and `Browser.getVersion` report the profile's user agent, so a client that copies it passes the check.
+
+```json
+{
+  "os": "macos", "chrome": 146, "full_version": "146.0.7680.164",
+  "architecture": "arm", "platform_version": "15.6.1",
+  "screen": [1512, 982], "hardware_concurrency": 10, "device_memory": 8,
+  "timezone": "America/Chicago", "locale": "en-US", "seed": 424242
+}
+```
+
+```bash
+OBSCURA_PROFILE_FILE=~/.config/obscura/device.json obscura serve --stealth
+```
+
+`tools/profile-capture/index.html` writes this file from a real Chrome.
+
 ### `OBSCURA_ROTATE_PROFILE`
 
 Opt into picking a random profile per browser context instead of the stable default. Leave it off when you pin a TLS fingerprint, proxy region, or timezone, since a rotated profile would no longer match those.

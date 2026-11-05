@@ -58,6 +58,9 @@ impl wreq::dns::Resolve for SsrfGuardResolver {
 }
 
 #[cfg(feature = "stealth")]
+use crate::profile_file::owns_header;
+
+#[cfg(feature = "stealth")]
 pub const STEALTH_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36";
 
@@ -71,6 +74,70 @@ pub const STEALTH_NAVIGATOR_PLATFORM: &str = "Win32";
 pub const STEALTH_UA_PLATFORM: &str = "Windows";
 #[cfg(feature = "stealth")]
 pub const STEALTH_UA_PLATFORM_VERSION: &str = "15.0.0";
+
+/// The identity the stealth transport puts on the wire, which navigator and
+/// the client hints must repeat: the `OBSCURA_PROFILE_FILE` device when one is
+/// set, otherwise the built-in Windows Chrome 145.
+#[cfg(feature = "stealth")]
+pub struct StealthIdentity {
+    pub user_agent: String,
+    pub navigator_platform: &'static str,
+    pub ua_platform: &'static str,
+    pub ua_platform_version: String,
+}
+
+#[cfg(feature = "stealth")]
+pub fn stealth_identity() -> StealthIdentity {
+    match crate::profile_file::active() {
+        Some(p) => StealthIdentity {
+            user_agent: p.user_agent(),
+            navigator_platform: p.os.navigator_platform(),
+            ua_platform: p.os.ua_platform(),
+            ua_platform_version: p.platform_version.clone(),
+        },
+        None => StealthIdentity {
+            user_agent: STEALTH_USER_AGENT.to_string(),
+            navigator_platform: STEALTH_NAVIGATOR_PLATFORM,
+            ua_platform: STEALTH_UA_PLATFORM,
+            ua_platform_version: STEALTH_UA_PLATFORM_VERSION.to_string(),
+        },
+    }
+}
+
+/// The wreq emulation target for the active identity. The profile file only
+/// accepts Chrome majors in `profile_file::SUPPORTED_CHROME`.
+#[cfg(feature = "stealth")]
+fn emulation_target() -> (wreq_util::Profile, wreq_util::Platform) {
+    use crate::profile_file::Os;
+    use wreq_util::{Platform, Profile};
+    let Some(p) = crate::profile_file::active() else {
+        return (Profile::Chrome145, Platform::Windows);
+    };
+    let profile = match p.chrome {
+        143 => Profile::Chrome143,
+        144 => Profile::Chrome144,
+        146 => Profile::Chrome146,
+        147 => Profile::Chrome147,
+        148 => Profile::Chrome148,
+        _ => Profile::Chrome145,
+    };
+    let platform = match p.os {
+        Os::Windows => Platform::Windows,
+        Os::Macos => Platform::MacOS,
+        Os::Linux => Platform::Linux,
+    };
+    (profile, platform)
+}
+
+/// The profile's Accept-Language, unless the request already carries one
+/// (a page may set it, as in Chrome). The emulation's default is en-US.
+#[cfg(feature = "stealth")]
+fn profile_accept_language<'a>(mut supplied: impl Iterator<Item = &'a String>) -> Option<String> {
+    if supplied.any(|k| k.eq_ignore_ascii_case("accept-language")) {
+        return None;
+    }
+    crate::profile_file::accept_language()
+}
 
 #[cfg(feature = "stealth")]
 fn tracker_blocking_enabled(value: Option<&str>) -> bool {
@@ -215,9 +282,10 @@ impl StealthHttpClient {
         proxy_url: Option<&str>,
         allow_private_network: bool,
     ) -> Self {
+        let (profile, platform) = emulation_target();
         let emulation_opts = wreq_util::Emulation::builder()
-            .profile(wreq_util::Profile::Chrome145)
-            .platform(wreq_util::Platform::Windows)
+            .profile(profile)
+            .platform(platform)
             .build();
 
         let mut builder = wreq::Client::builder()
@@ -409,11 +477,16 @@ impl StealthHttpClient {
             let extra_headers = self.extra_headers.read().await;
             let supplied = request_headers.as_ref();
             let effective_headers = supplied.unwrap_or(&extra_headers);
-            if let Some(ua) = effective_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v)
+            // Under a profile the UA and client hints are the profile's, so a
+            // supplied one is dropped rather than sent beside the emulation's.
+            if let Some(ua) = effective_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent") && !owns_header(k)).map(|(_, v)| v)
                 .or(self.user_agent.as_ref()) {
                 req = req.header("user-agent", ua.as_str());
             }
-            for (k, v) in effective_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent")) {
+            if let Some(lang) = profile_accept_language(effective_headers.keys()) {
+                req = req.header("accept-language", lang);
+            }
+            for (k, v) in effective_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") && !owns_header(k)) {
                 if k.eq_ignore_ascii_case("origin") {
                     continue;
                 }
@@ -604,16 +677,20 @@ impl StealthHttpClient {
             }
         }
         let extra_headers = self.extra_headers.read().await;
-        if let Some(ua) = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v)
-            .or_else(|| extra_headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("user-agent")).map(|(_, v)| v))
+        let is_ua = |k: &str| k.eq_ignore_ascii_case("user-agent") && !owns_header(k);
+        if let Some(ua) = headers.iter().find(|(k, _)| is_ua(k.as_str())).map(|(_, v)| v)
+            .or_else(|| extra_headers.iter().find(|(k, _)| is_ua(k.as_str())).map(|(_, v)| v))
             .or(self.user_agent.as_ref()) {
             req = req.header("user-agent", ua.as_str());
         }
-        for (k, v) in extra_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent")) {
+        if let Some(lang) = profile_accept_language(headers.keys().chain(extra_headers.keys())) {
+            req = req.header("accept-language", lang);
+        }
+        for (k, v) in extra_headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") && !owns_header(k)) {
             req = req.header(k.as_str(), v.as_str());
         }
         drop(extra_headers);
-        for (k, v) in headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent")) {
+        for (k, v) in headers.iter().filter(|(k, _)| !k.eq_ignore_ascii_case("user-agent") && !owns_header(k)) {
             req = req.header(k.as_str(), v.as_str());
         }
         if !body.is_empty() {

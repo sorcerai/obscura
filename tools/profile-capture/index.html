@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Obscura profile capture</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; max-width: 46rem; margin: 2rem auto; padding: 0 1rem; color: #1b1b1b; }
+  pre { background: #f4f4f2; padding: 1rem; overflow-x: auto; border-radius: 4px; }
+  .bad { color: #a40000; } .ok { color: #1d6b2e; }
+  button { font: inherit; padding: .4rem .9rem; margin-right: .5rem; }
+</style>
+</head>
+<body>
+<h1>Obscura profile capture</h1>
+<p>Open this page in the real Chrome whose signature you want, ideally a clean profile that isn't signed in, on the network the crawler will use. It reads only what that browser reports about itself and sends nothing anywhere. Save the result as the file <code>OBSCURA_PROFILE_FILE</code> points to.</p>
+<p>Serve it from <code>http://localhost</code> (for example <code>python3 -m http.server</code> in this folder) so Chrome exposes its client hints.</p>
+<div id="status"></div>
+<pre id="out">Reading…</pre>
+<p>
+  <button id="copy" type="button" disabled>Copy</button>
+  <button id="save" type="button" disabled>Download device.json</button>
+</p>
+<p>Obscura derives these from <code>os</code> and <code>chrome</code>:</p>
+<pre id="derived"></pre>
+<script>
+(async () => {
+  const SUPPORTED = [143, 148]; // Chrome majors obscura's transport can emulate
+  const problems = [];
+  const uad = navigator.userAgentData;
+  if (!uad) problems.push('navigator.userAgentData is missing: use Chrome, served from http://localhost or https.');
+  const hints = uad ? await uad.getHighEntropyValues(['platform', 'platformVersion', 'fullVersionList', 'architecture']) : {};
+  const os = { macOS: 'macos', Windows: 'windows', Linux: 'linux' }[hints.platform];
+  if (uad && !os) problems.push(`platform ${JSON.stringify(hints.platform)} is not Windows, macOS or Linux.`);
+  const brand = (hints.fullVersionList || []).find(b => b.brand === 'Google Chrome' || b.brand === 'Chromium');
+  const chrome = brand ? parseInt(brand.version, 10) : NaN;
+  if (uad && !brand) problems.push('this is not Chrome; a signature from another Chromium browser would not match the Chrome TLS emulation.');
+  if (brand && (chrome < SUPPORTED[0] || chrome > SUPPORTED[1])) {
+    problems.push(`Chrome ${chrome}: obscura emulates ${SUPPORTED[0]}-${SUPPORTED[1]} on the wire, so this signature would not match its TLS. Capture from a Chrome in that range.`);
+  }
+  const architecture = { x86: 'x86', arm: 'arm' }[hints.architecture];
+  if (uad && !architecture) problems.push(`architecture ${JSON.stringify(hints.architecture)} is not x86 or arm.`);
+  if (os === 'linux' && architecture === 'arm') problems.push('Linux on ARM: obscura reports Linux as x86_64, so this device would contradict itself.');
+  const profile = {
+    os: os || null,
+    chrome: Number.isFinite(chrome) ? chrome : null,
+    full_version: brand ? brand.version : null,
+    architecture: architecture || null,
+    platform_version: hints.platformVersion || null,
+    screen: [screen.width, screen.height],
+    hardware_concurrency: navigator.hardwareConcurrency,
+    device_memory: navigator.deviceMemory,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    locale: navigator.language,
+    seed: crypto.getRandomValues(new Uint32Array(1))[0],
+  };
+  const text = JSON.stringify(profile, null, 2) + '\n';
+  document.getElementById('out').textContent = text;
+  const status = document.getElementById('status');
+  status.className = problems.length ? 'bad' : 'ok';
+  status.innerHTML = problems.length
+    ? '<p>Not usable as captured:</p><ul>' + problems.map(p => `<li>${p.replace(/</g, '&lt;')}</li>`).join('') + '</ul>'
+    : '<p>Captured. Obscura checks it again when it starts.</p>';
+  const token = { macos: 'Macintosh; Intel Mac OS X 10_15_7', windows: 'Windows NT 10.0; Win64; x64', linux: 'X11; Linux x86_64' }[os];
+  const platform = { macos: 'MacIntel', windows: 'Win32', linux: 'Linux x86_64' }[os];
+  document.getElementById('derived').textContent = token && brand
+    ? `User-Agent: Mozilla/5.0 (${token}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chrome}.0.0.0 Safari/537.36\nnavigator.platform: ${platform}\nSec-CH-UA-Platform: "${hints.platform}"`
+    : '(needs a supported os and Chrome)';
+  const copy = document.getElementById('copy');
+  const save = document.getElementById('save');
+  copy.disabled = save.disabled = false;
+  copy.onclick = () => navigator.clipboard.writeText(text).catch(() => {
+    const range = document.createRange();
+    range.selectNodeContents(document.getElementById('out'));
+    getSelection().removeAllRanges();
+    getSelection().addRange(range);
+  });
+  save.onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = 'device.json';
+    a.click();
+  };
+})();
+</script>
+</body>
+</html>

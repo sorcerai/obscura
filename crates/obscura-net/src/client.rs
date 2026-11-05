@@ -1025,8 +1025,12 @@ fn chrome_client_hints(ua: &str) -> (String, String) {
         ("Chromium".to_string(), major.to_string()),
         ("Google Chrome".to_string(), major.to_string()),
     ];
-    let p = PERMS[major % 6];
-    let sec_ch_ua = p
+    // Chromium places brand k at position PERMS[k], so invert the permutation.
+    let mut at = [0usize; 3];
+    for (brand, &position) in PERMS[major % 6].iter().enumerate() {
+        at[position] = brand;
+    }
+    let sec_ch_ua = at
         .iter()
         .map(|&i| format!("\"{}\";v=\"{}\"", brands[i].0, brands[i].1))
         .collect::<Vec<_>>()
@@ -1039,6 +1043,28 @@ fn chrome_client_hints(ua: &str) -> (String, String) {
         "\"Linux\""
     };
     (sec_ch_ua, platform.to_string())
+}
+
+#[cfg(test)]
+mod client_hint_tests {
+    use super::chrome_client_hints;
+
+    fn order(major: u32) -> Vec<String> {
+        let ua = format!("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36");
+        chrome_client_hints(&ua)
+            .0
+            .split(", ")
+            .map(|b| b.split(';').next().unwrap().trim_matches('"').to_string())
+            .collect()
+    }
+
+    #[test]
+    fn brand_order_follows_chromium_for_every_permutation() {
+        assert_eq!(order(145), ["Not:A-Brand", "Google Chrome", "Chromium"]);
+        assert_eq!(order(146), ["Chromium", "Not-A.Brand", "Google Chrome"]);
+        assert_eq!(order(147), ["Google Chrome", "Not.A/Brand", "Chromium"]);
+        assert_eq!(order(148), ["Chromium", "Google Chrome", "Not/A)Brand"]);
+    }
 }
 
 impl ObscuraHttpClient {

@@ -4238,38 +4238,35 @@ async fn fetch_url_inner(
         && (!is_cors_safelisted_method(&req_method) || !unsafe_header_names.is_empty());
 
     if needs_preflight {
-        let mut preflight_request = client
-            .request(reqwest::Method::OPTIONS, &url)
-            .timeout(fetch_timeout())
-            .header("Origin", &page_origin)
-            .header("Access-Control-Request-Method", method.as_str());
+        let mut preflight_headers = vec![
+            ("origin".to_string(), page_origin.clone()),
+            ("access-control-request-method".to_string(), method.as_str().to_string()),
+        ];
         if !unsafe_header_names.is_empty() {
-            preflight_request = preflight_request.header(
-                "Access-Control-Request-Headers",
+            preflight_headers.push((
+                "access-control-request-headers".to_string(),
                 unsafe_header_names.join(","),
-            );
+            ));
         }
-        let preflight = preflight_request.send().await.map_err(|e| {
-                deno_error::JsErrorBox::generic(format!("CORS preflight failed: {}", e))
-            })?;
+        let (preflight_status, preflight_response_headers) =
+            send_preflight(&state, &client, &url, preflight_headers).await?;
 
         // Fetch spec: the preflight response's status must be an ok status
         // before its CORS headers are consulted (#973).
-        if !preflight.status().is_success() {
+        if !preflight_status.is_success() {
             return Err(deno_error::JsErrorBox::generic(format!(
                 "CORS preflight returned HTTP {}",
-                preflight.status()
+                preflight_status
             )));
         }
+        let preflight_headers = &preflight_response_headers;
 
-        let allowed_origin = preflight
-            .headers()
+        let allowed_origin = preflight_headers
             .get("access-control-allow-origin")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
 
-        let allow_credentials = preflight
-            .headers()
+        let allow_credentials = preflight_headers
             .get("access-control-allow-credentials")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
@@ -4281,14 +4278,14 @@ async fn fetch_url_inner(
         }
 
         let allowed_methods =
-            parse_cors_header_list(preflight.headers(), "access-control-allow-methods")
+            parse_cors_header_list(preflight_headers, "access-control-allow-methods")
         .ok_or_else(|| {
             deno_error::JsErrorBox::generic(
                 "CORS preflight returned an invalid Access-Control-Allow-Methods value",
             )
         })?;
         let allowed_headers =
-            parse_cors_header_list(preflight.headers(), "access-control-allow-headers")
+            parse_cors_header_list(preflight_headers, "access-control-allow-headers")
         .ok_or_else(|| {
             deno_error::JsErrorBox::generic(
                 "CORS preflight returned an invalid Access-Control-Allow-Headers value",
@@ -4646,6 +4643,59 @@ fn fetch_response(
 /// the request carries the Chrome TLS fingerprint and client hints. Cookie
 /// handling lives inside StealthHttpClient::send_single, which shares the
 /// context jar. Request identity and destination survive transport selection.
+/// Sends a CORS preflight on the transport the request itself will use. On a
+/// stealth page a reqwest preflight showed the server a second TLS and header
+/// signature for one browser fetch. No cookies, no redirects, as in Chrome.
+async fn send_preflight(
+    state: &Rc<RefCell<OpState>>,
+    client: &reqwest::Client,
+    url: &str,
+    headers: Vec<(String, String)>,
+) -> Result<(reqwest::StatusCode, reqwest::header::HeaderMap), deno_error::JsErrorBox> {
+    let failed = |e: String| deno_error::JsErrorBox::generic(format!("CORS preflight failed: {}", e));
+    #[cfg(feature = "stealth")]
+    {
+        let stealth = {
+            let st = state.borrow();
+            let gs = st.borrow::<SharedState>().clone();
+            let client = gs.borrow().stealth_client.clone();
+            client
+        };
+        if let Some(stealth) = stealth {
+            let parsed = url::Url::parse(url).map_err(|e| failed(e.to_string()))?;
+            let mut request_headers: HashMap<String, String> = headers.into_iter().collect();
+            request_headers.insert("accept".to_string(), "*/*".to_string());
+            let response = tokio::time::timeout(
+                fetch_timeout(),
+                stealth.send_single_headers_with_context("OPTIONS", &parsed, &request_headers, &[], None, false, 0),
+            )
+            .await
+            .map_err(|_| failed("timed out".to_string()))?
+            .map_err(|e| failed(e.to_string()))?;
+            let mut map = reqwest::header::HeaderMap::new();
+            for (name, value) in &response.headers {
+                if let (Ok(name), Ok(value)) = (
+                    reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                    reqwest::header::HeaderValue::from_str(value),
+                ) {
+                    map.insert(name, value);
+                }
+            }
+            let status = reqwest::StatusCode::from_u16(response.status)
+                .map_err(|e| failed(e.to_string()))?;
+            return Ok((status, map));
+        }
+    }
+    #[cfg(not(feature = "stealth"))]
+    let _ = state;
+    let mut request = client.request(reqwest::Method::OPTIONS, url).timeout(fetch_timeout());
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    let response = request.send().await.map_err(|e| failed(e.to_string()))?;
+    Ok((response.status(), response.headers().clone()))
+}
+
 #[cfg(feature = "stealth")]
 async fn stealth_fetch_all(
     state: Rc<RefCell<OpState>>,

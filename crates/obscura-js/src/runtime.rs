@@ -678,7 +678,8 @@ impl ObscuraJsRuntime {
             // locale the other surfaces claim (#734). This is process-global.
             // Set it under the first-creation lock, before parallel restorations.
             if !ISOLATE_INITIALIZED.load(std::sync::atomic::Ordering::Relaxed) {
-                deno_core::v8::icu::set_default_locale("en-US");
+                let locale = obscura_net::profile_file::active().map_or("en-US", |p| p.locale.as_str());
+                deno_core::v8::icu::set_default_locale(locale);
             }
 
             let mut runtime = JsRuntime::new(RuntimeOptions {
@@ -1001,7 +1002,7 @@ impl ObscuraJsRuntime {
     ) {
         use deno_core::v8;
 
-        const IDENTITY_GLOBALS: [&str; 7] = [
+        const IDENTITY_GLOBALS: [&str; 9] = [
             "__obscura_ua",
             "__obscura_platform",
             "__obscura_ua_platform",
@@ -1009,6 +1010,8 @@ impl ObscuraJsRuntime {
             "__obscura_stealth",
             "__obscura_geo_lat",
             "__obscura_geo_lon",
+            "__obscura_fp_profile",
+            "__obscura_language",
         ];
 
         let main = self.runtime().main_context();
@@ -1588,6 +1591,16 @@ impl ObscuraJsRuntime {
         let _ = self.execute_runtime_script(
             "<set-stealth>",
             format!("globalThis.__obscura_stealth = {};", enabled),
+        );
+    }
+
+    /// Pin the fingerprint to one device: screen, hardware and the noise seed
+    /// stay the same on every document instead of being re-drawn per page.
+    /// `profile` is `DeviceProfile::fingerprint_json()`; JSON is a JS literal.
+    pub fn set_fingerprint_profile(&mut self, profile: &serde_json::Value) {
+        let _ = self.execute_runtime_script(
+            "<set-fingerprint-profile>",
+            format!("globalThis.__obscura_fp_profile = Object.freeze({profile});"),
         );
     }
 
@@ -5359,6 +5372,28 @@ mod tests {
             serde_json::json!("Mozilla/5.0 line1\nline2"),
             "the UA must be stored verbatim, including control characters"
         );
+    }
+
+    /// OBSCURA_PROFILE_FILE: screen and hardware were re-drawn on every
+    /// document; with a device profile they are the device's, page after page.
+    #[test]
+    fn a_device_profile_keeps_the_fingerprint_across_documents() {
+        let probe = "JSON.stringify([screen.width, screen.height, \
+                     navigator.hardwareConcurrency, navigator.deviceMemory])";
+        let mut rt = ObscuraJsRuntime::new();
+        rt.set_stealth(true);
+        rt.set_fingerprint_profile(&serde_json::json!({
+            "screen": [1512, 982], "hardwareConcurrency": 10, "deviceMemory": 8, "seed": 424242
+        }));
+        let mut seen = Vec::new();
+        for path in ["one", "two", "three"] {
+            rt.set_dom(parse_html(&format!("<p>{path}</p>")));
+            rt.set_url(&format!("http://example.com/{path}"));
+            rt.run_page_init();
+            seen.push(rt.evaluate(probe).unwrap());
+        }
+        assert_eq!(seen[0], serde_json::json!("[1512,982,10,8]"));
+        assert!(seen.iter().all(|v| v == &seen[0]), "{seen:?}");
     }
 
     #[test]

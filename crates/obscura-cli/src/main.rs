@@ -333,7 +333,16 @@ fn merge_user_agent(
     global_user_agent: Option<String>,
     command_user_agent: Option<String>,
 ) -> Option<String> {
-    command_user_agent.or(global_user_agent)
+    let user_agent = command_user_agent.or(global_user_agent);
+    // Refused like a conflicting OBSCURA_TIMEZONE, not merged into the profile.
+    if let Some(Err(problem)) = user_agent
+        .as_deref()
+        .map(obscura_net::profile_file::check_user_agent)
+    {
+        eprintln!("--user-agent: {problem}");
+        std::process::exit(2);
+    }
+    user_agent
 }
 
 /// Normalize a raw `--v8-flags` value into the string we'll hand to V8.
@@ -409,10 +418,42 @@ async fn run_cli() -> anyhow::Result<()> {
     // TZ from the host is respected.
     // SAFETY: runs before any V8 isolate or worker thread starts, so the env is
     // effectively single threaded here.
-    if let Some(tz) = std::env::var("OBSCURA_TIMEZONE")
+    //
+    // An OBSCURA_PROFILE_FILE device is checked here, before anything serves a
+    // request, and its zone replaces the default and any host TZ. A different
+    // OBSCURA_TIMEZONE would split the identity, so it is refused, not merged.
+    let device = obscura_net::profile_file::load_from_env().unwrap_or_else(|problems| {
+        eprintln!("{} rejected:", obscura_net::profile_file::PROFILE_FILE_ENV);
+        for problem in problems {
+            eprintln!("  - {problem}");
+        }
+        std::process::exit(2);
+    });
+    let explicit_tz = std::env::var("OBSCURA_TIMEZONE")
         .ok()
-        .filter(|s| !s.trim().is_empty())
-    {
+        .filter(|s| !s.trim().is_empty());
+    if let Some(device) = &device {
+        // Only the stealth transport emulates Chrome's TLS and carries the
+        // profile on every request. Without it a profile would claim Chrome
+        // over a rustls handshake, and scripted fetches send a Linux UA.
+        if !(cfg!(feature = "stealth") && args.stealth) {
+            eprintln!(
+                "{} needs --stealth, in a build with the stealth feature",
+                obscura_net::profile_file::PROFILE_FILE_ENV
+            );
+            std::process::exit(2);
+        }
+        if explicit_tz.as_deref().is_some_and(|tz| tz != device.timezone) {
+            eprintln!(
+                "OBSCURA_TIMEZONE differs from the profile's timezone {:?}; set one or the other",
+                device.timezone
+            );
+            std::process::exit(2);
+        }
+        unsafe {
+            std::env::set_var("TZ", &device.timezone);
+        }
+    } else if let Some(tz) = explicit_tz {
         unsafe {
             std::env::set_var("TZ", tz);
         }
@@ -643,7 +684,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 global_proxy,
                 stealth,
                 obey_robots,
-                global_user_agent.clone(),
+                merge_user_agent(global_user_agent.clone(), None),
             )
             .await?;
         }

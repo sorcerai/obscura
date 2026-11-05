@@ -158,7 +158,13 @@ pub async fn handle(
                 .get("userAgent")
                 .and_then(Value::as_str)
                 .ok_or("Emulation.setUserAgentOverride requires userAgent")?;
+            if !user_agent.is_empty() {
+                obscura_net::profile_file::check_user_agent(user_agent)?;
+            }
             let accept_language = params.get("acceptLanguage").and_then(Value::as_str);
+            if let Some(accept_language) = accept_language {
+                obscura_net::profile_file::check_language(accept_language)?;
+            }
             let http_client = ctx
                 .get_session_page(session_id)
                 .ok_or("No page for session")?
@@ -183,6 +189,9 @@ pub async fn handle(
                 .get("locale")
                 .and_then(Value::as_str)
                 .ok_or("Emulation.setLocaleOverride requires locale")?;
+            if !locale.is_empty() {
+                obscura_net::profile_file::check_language(locale)?;
+            }
             let page = ctx
                 .get_session_page_mut(session_id)
                 .ok_or("No page for session")?;

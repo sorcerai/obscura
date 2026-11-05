@@ -38,6 +38,7 @@ const __obscuraCore = globalThis.Deno.core;
     '__obscura_hasPendingLoadDelayingScripts', '__obscura_hasPendingParserBlockingScripts',
     '__obscura_nextPendingTimeoutDelay',
     '__obscura_hw', '__obscura_mem', '__obscura_parseRefresh', '__obscura_declarativeRefresh',
+    '__obscura_fp_profile', '__obscura_language', '__obscura_activateSummary',
     '__documentReadyState__', '__currentUrl',
     // internal helpers (var-declared throughout the file)
     '__processDynScriptQueue', '_decodeDataScriptUrl', '_markNative', '_fpRand', '_fpNoise',
@@ -721,6 +722,8 @@ var _fpCache = null;
 // Parenthesized helpers retain compiled bytecode in the startup snapshot.
 const _getFp = (function _getFp() {
   if (_fpCache) return _fpCache;
+  // OBSCURA_PROFILE_FILE: one device's screen, validated host-side.
+  const _prof = globalThis.__obscura_fp_profile;
   const _uaPlat = globalThis.__obscura_ua_platform || 'Windows';
   const isMac = _uaPlat === 'macOS';
   const isLinux = _uaPlat === 'Linux';
@@ -783,7 +786,7 @@ const _getFp = (function _getFp() {
     compRatio: 12 + (_fpRand(104) - 0.5) * 4,
     batteryLevel: 0.5 + _fpRand(200) * 0.5,
     batteryCharging: _fpRand(201) > 0.3,
-    screen: screenPool[Math.floor(_fpRand(300) * screenPool.length)],
+    screen: _prof ? _prof.screen : screenPool[Math.floor(_fpRand(300) * screenPool.length)],
     canvasFingerprint: cfp,
   };
   return _fpCache;
@@ -8379,8 +8382,12 @@ function _uaBrands() {
     {brand: 'Chromium', version: String(seed)},
     {brand: 'Google Chrome', version: String(seed)},
   ];
+  // Chromium places brand k at position p[k], not brand p[k] at position k.
+  // The two only differ for majors 147 and 148 (seed % 6 of 3 and 4).
   var p = _BRAND_PERMS[seed % 6];
-  return [ordered[p[0]], ordered[p[1]], ordered[p[2]]];
+  var out = [];
+  out[p[0]] = ordered[0]; out[p[1]] = ordered[1]; out[p[2]] = ordered[2];
+  return out;
 }
 
 // Fingerprint surfaces (UA, plugins, webdriver, etc.) live on the prototype
@@ -8398,16 +8405,22 @@ globalThis.navigator = {
     get platform() { return globalThis.__obscura_ua_platform || "Windows"; },
     getHighEntropyValues(hints) {
       var brands = _uaBrands();
+      // A device profile carries the captured full version and architecture.
+      var prof = globalThis.__obscura_fp_profile;
+      var full = (prof && prof.fullVersion) || (_chromeMajor() + ".0.0.0");
       return Promise.resolve({
-        architecture: "x86",
+        architecture: (prof && prof.architecture) || "x86",
         bitness: "64",
         brands: brands,
-        fullVersionList: brands.map(function(b) { return {brand: b.brand, version: b.version + ".0.0.0"}; }),
+        fullVersionList: brands.map(function(b) {
+          var chrome = b.brand === 'Chromium' || b.brand === 'Google Chrome';
+          return {brand: b.brand, version: chrome ? full : b.version + ".0.0.0"};
+        }),
         mobile: false,
         model: "",
         platform: globalThis.__obscura_ua_platform || "Windows",
         platformVersion: globalThis.__obscura_ua_platform_version || "15.0.0",
-        uaFullVersion: _chromeMajor() + ".0.0.0",
+        uaFullVersion: full,
         wow64: false,
       });
     },
@@ -15838,7 +15851,8 @@ function _ensureInitialFrameRealm(element, srcdoc) {
     delete child.Deno;
     for (const name of ['__obscura_ua', '__obscura_platform', '__obscura_ua_platform',
                        '__obscura_ua_platform_version', '__obscura_stealth',
-                       '__obscura_geo_lat', '__obscura_geo_lon']) {
+                       '__obscura_geo_lat', '__obscura_geo_lon',
+                       '__obscura_fp_profile', '__obscura_language']) {
       if (globalThis[name] !== undefined) child[name] = globalThis[name];
     }
     child.__obscura_frameId = id;
@@ -18867,7 +18881,11 @@ globalThis.__obscura_init = (function() {
     _realmFrameId);
   _browserPostedTaskWakePending = false;
   for (const queue of _browserPostedTaskQueues) _browserPostedTaskDiscardQueue(queue);
-  _fpSeed = Date.now() ^ (Math.random() * 0xFFFFFFFF >>> 0);
+  // A device profile keeps one seed, so canvas and audio noise match across
+  // documents the way a real device's hashes do; otherwise draw a new one.
+  _fpSeed = globalThis.__obscura_fp_profile
+    ? (globalThis.__obscura_fp_profile.seed | 0)
+    : Date.now() ^ (Math.random() * 0xFFFFFFFF >>> 0);
   _fpCache = null;
   // A real navigation just completed (this runs after set_url), so drop any
   // URL a location setter previewed synchronously and let document_url drive
@@ -18909,9 +18927,12 @@ globalThis.__obscura_init = (function() {
   globalThis.outerWidth = sw; globalThis.outerHeight = sh - 40;
 
   var hwValues = globalThis.__obscura_stealth ? [4, 6, 8, 12, 16] : [2, 4, 6, 8, 12, 16];
-  globalThis.__obscura_hw = hwValues[Math.floor(_fpRand(400) * hwValues.length)];
   var memValues = globalThis.__obscura_stealth ? [4, 8] : [0.25, 0.5, 1, 2, 4, 8];
-  globalThis.__obscura_mem = memValues[Math.floor(_fpRand(401) * memValues.length)];
+  const _devProf = globalThis.__obscura_fp_profile;
+  globalThis.__obscura_hw = _devProf ? _devProf.hardwareConcurrency
+    : hwValues[Math.floor(_fpRand(400) * hwValues.length)];
+  globalThis.__obscura_mem = _devProf ? _devProf.deviceMemory
+    : memValues[Math.floor(_fpRand(401) * memValues.length)];
 
   const timing = {};
   for (const name of Object.keys(JSON.parse(_dom('performance_timing')))) {

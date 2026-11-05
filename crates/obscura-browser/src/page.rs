@@ -1723,7 +1723,8 @@ impl Page {
     pub fn set_locale_override(&mut self, locale: Option<String>) {
         self.locale_override = locale.filter(|locale| !locale.is_empty());
         if let Some(js) = &mut self.js {
-            js.set_locale(self.locale_override.as_deref().unwrap_or("en-US"));
+            let default = obscura_net::profile_file::active().map_or("en-US", |d| d.locale.as_str());
+            js.set_locale(self.locale_override.as_deref().unwrap_or(default));
         }
     }
 
@@ -1939,11 +1940,14 @@ impl Page {
         #[cfg(feature = "stealth")]
         if self.stealth_client.is_some() {
             rt.set_stealth(true);
-            rt.set_user_agent(self.context.user_agent_override.as_deref().unwrap_or(obscura_net::STEALTH_USER_AGENT));
+            let identity = obscura_net::stealth_identity();
+            rt.set_user_agent(
+                self.context.user_agent_override.as_deref().unwrap_or(&identity.user_agent),
+            );
             rt.set_platform(
-                obscura_net::STEALTH_NAVIGATOR_PLATFORM,
-                obscura_net::STEALTH_UA_PLATFORM,
-                obscura_net::STEALTH_UA_PLATFORM_VERSION,
+                identity.navigator_platform,
+                identity.ua_platform,
+                &identity.ua_platform_version,
             );
         } else {
             if let Ok(ua) = self.http_client.user_agent.try_read() {
@@ -1966,7 +1970,15 @@ impl Page {
                 &self.context.ua_platform_version,
             );
         }
-        if let Some(locale) = &self.locale_override {
+        let device = obscura_net::profile_file::active();
+        if let Some(device) = device {
+            rt.set_fingerprint_profile(&device.fingerprint_json());
+        }
+        if let Some(locale) = self
+            .locale_override
+            .as_deref()
+            .or(device.map(|d| d.locale.as_str()))
+        {
             rt.set_locale(locale);
         }
         if let Some((lat, lon)) = env_geolocation() {
@@ -2554,6 +2566,10 @@ impl Page {
         }
 
         let client = self.http_client.clone();
+        // Classic scripts went out on reqwest even under --stealth, so every
+        // script host saw a rustls handshake beside the page's Chrome one.
+        #[cfg(feature = "stealth")]
+        let stealth_client = self.stealth_client.clone();
         let page_callbacks = self.callbacks.clone();
         let script_initiator = self
             .url
@@ -2563,6 +2579,8 @@ impl Page {
             .iter()
             .map(|(idx, url)| {
                 let client = client.clone();
+                #[cfg(feature = "stealth")]
+                let stealth_client = stealth_client.clone();
                 let cbs = page_callbacks.clone();
                 let initiator = script_initiator.clone();
                 let url = url.clone();
@@ -2595,10 +2613,14 @@ impl Page {
                         return Some((idx, url, resp));
                     }
                     let request = ResourceRequest::subresource(ResourceType::Script, &initiator);
-                    match client
-                        .fetch_resource_with_callbacks(&parsed, request, Some(&cbs))
-                        .await
-                    {
+                    #[cfg(feature = "stealth")]
+                    let fetched = match stealth_client {
+                        Some(stealth) => stealth.fetch_resource_with_callbacks(&parsed, request, Some(&cbs)).await,
+                        None => client.fetch_resource_with_callbacks(&parsed, request, Some(&cbs)).await,
+                    };
+                    #[cfg(not(feature = "stealth"))]
+                    let fetched = client.fetch_resource_with_callbacks(&parsed, request, Some(&cbs)).await;
+                    match fetched {
                         Ok(resp) => Some((idx, url, resp)),
                         Err(e) => {
                             tracing::warn!("Failed to fetch script {}: {}", url, e);
@@ -3550,11 +3572,17 @@ impl Page {
                     robots_url.set_path("/robots.txt");
                     robots_url.set_query(None);
                     robots_url.set_fragment(None);
-                    let body = match self
-                        .http_client
-                        .fetch_with_callbacks(&robots_url, Some(&self.callbacks))
-                        .await
-                    {
+                    // The stealth client when there is one: robots.txt on
+                    // reqwest showed each new host a non-Chrome TLS signature
+                    // right before the page.
+                    #[cfg(feature = "stealth")]
+                    let fetched = match &self.stealth_client {
+                        Some(client) => client.fetch_with_callbacks(&robots_url, Some(&self.callbacks)).await,
+                        None => self.http_client.fetch_with_callbacks(&robots_url, Some(&self.callbacks)).await,
+                    };
+                    #[cfg(not(feature = "stealth"))]
+                    let fetched = self.http_client.fetch_with_callbacks(&robots_url, Some(&self.callbacks)).await;
+                    let body = match fetched {
                         Ok(resp) if resp.status == 200 => {
                             String::from_utf8_lossy(&resp.body).into_owned()
                         }
@@ -3624,9 +3652,19 @@ impl Page {
                 redirected_from: Vec::new(),
             })
         } else if method == "POST" {
-            self.http_client
-                .post_form_with_callbacks(&url, body, Some(&self.callbacks))
-                .await
+            // A form POST on reqwest under --stealth was a second signature.
+            #[cfg(feature = "stealth")]
+            let posted = match &self.stealth_client {
+                Some(stealth) => {
+                    stealth
+                        .fetch_navigation_request(&url, "POST", Some(body.as_bytes().to_vec()), None, Some(&self.callbacks))
+                        .await
+                }
+                None => self.http_client.post_form_with_callbacks(&url, body, Some(&self.callbacks)).await,
+            };
+            #[cfg(not(feature = "stealth"))]
+            let posted = self.http_client.post_form_with_callbacks(&url, body, Some(&self.callbacks)).await;
+            posted
         } else {
             self.do_fetch(&url).await
         }

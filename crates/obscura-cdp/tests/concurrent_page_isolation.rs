@@ -160,7 +160,7 @@ async fn an_objectid_keeps_its_live_object_across_a_command_on_another_page() {
     )
     .await;
     assert!(first_call.error.is_none(), "first callFunctionOn failed: {:?}", first_call.error);
-    assert_eq!(first_call.result.unwrap()["result"]["value"], json!(1.0));
+    assert_eq!(first_call.result.unwrap()["result"]["value"], json!(1));
 
     // Touch the other page — this is what tore `first`'s isolate down before.
     let touch = cdp(
@@ -195,7 +195,7 @@ async fn an_objectid_keeps_its_live_object_across_a_command_on_another_page() {
     );
     assert_eq!(
         second_call.result.unwrap()["result"]["value"],
-        json!(2.0),
+        json!(2),
         "the first page's object handle lost its state when the second page ran a command"
     );
 }

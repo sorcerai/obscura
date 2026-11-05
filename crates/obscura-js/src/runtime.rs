@@ -4511,16 +4511,25 @@ impl ObscuraJsRuntime {
                 value: Some(value.clone()),
                 unserializable_value: None,
             },
-            serde_json::Value::Number(n) => RemoteObjectInfo {
-                thrown: false,
-                js_type: "number".into(),
-                subtype: None,
-                class_name: String::new(),
-                description: n.to_string(),
-                object_id: None,
-                value: Some(value.clone()),
-                unserializable_value: None,
-            },
+            serde_json::Value::Number(n) => {
+                // Chrome writes a whole number without a fraction (`94`); the
+                // f64 here would go out as `94.0`, which a client reading an
+                // integer rejects (chromey's content stream does).
+                let value = n
+                    .as_f64()
+                    .filter(|f| n.is_f64() && f.fract() == 0.0 && f.abs() <= 9_007_199_254_740_991.0)
+                    .map_or_else(|| value.clone(), |f| serde_json::json!(f as i64));
+                RemoteObjectInfo {
+                    thrown: false,
+                    js_type: "number".into(),
+                    subtype: None,
+                    class_name: String::new(),
+                    description: value.to_string(),
+                    object_id: None,
+                    value: Some(value),
+                    unserializable_value: None,
+                }
+            }
             serde_json::Value::String(s) => RemoteObjectInfo {
                 thrown: false,
                 js_type: "string".into(),
@@ -19721,7 +19730,7 @@ mod tests {
         for await_promise in [false, true] {
             let result = rt.evaluate_for_cdp("6 * 7", true, await_promise).await.unwrap();
             assert!(!result.thrown);
-            assert_eq!(result.value, Some(serde_json::json!(42.0)));
+            assert_eq!(result.value, Some(serde_json::json!(42)));
         }
     }
 
@@ -19731,10 +19740,10 @@ mod tests {
         for (name, await_promise) in [("syncLexical", false), ("asyncLexical", true)] {
             let declaration = format!("let {name} = 40; {name}");
             let first = rt.evaluate_for_cdp(&declaration, true, await_promise).await.unwrap();
-            assert_eq!(first.value, Some(serde_json::json!(40.0)));
+            assert_eq!(first.value, Some(serde_json::json!(40)));
             let second = rt.evaluate_for_cdp(&format!("{name} += 2; {name}"), true, await_promise).await.unwrap();
             assert!(!second.thrown);
-            assert_eq!(second.value, Some(serde_json::json!(42.0)));
+            assert_eq!(second.value, Some(serde_json::json!(42)));
         }
     }
 
@@ -19771,7 +19780,7 @@ mod tests {
         let kept = rt.call_function_on_for_cdp(
             "function() { return this.kept; }", Some(&oid), &[], true, false,
         ).await.unwrap();
-        assert_eq!(kept.value, Some(serde_json::json!(42.0)));
+        assert_eq!(kept.value, Some(serde_json::json!(42)));
         rt.release_object(&oid);
         assert_eq!(
             rt.evaluate("Object.keys(globalThis.__obscura_objects).length").unwrap(),
@@ -20242,7 +20251,7 @@ mod tests {
         rt.execute_script("ready-timer", "globalThis.timerRan = false; setTimeout(() => timerRan = true, 0);").unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         let result = rt.evaluate_for_cdp("Promise.resolve(42)", true, true).await.unwrap();
-        assert_eq!(result.value.unwrap(), serde_json::json!(42.0));
+        assert_eq!(result.value.unwrap(), serde_json::json!(42));
         assert_eq!(rt.evaluate("timerRan").unwrap(), serde_json::json!(false),
             "an already-resolved CDP promise must not drain unrelated tasks");
         rt.run_autonomous_event_loop_turn().await.unwrap();

@@ -235,7 +235,7 @@ async fn cdp_click_on_submit_button_content_activates_the_button() {
     )
     .await;
 
-    assert_eq!(result["result"]["value"], json!(1.0), "button descendants share its activation behavior");
+    assert_eq!(result["result"]["value"], json!(1), "button descendants share its activation behavior");
 }
 
 // requestSubmit(submitter) must validate its argument before doing anything
